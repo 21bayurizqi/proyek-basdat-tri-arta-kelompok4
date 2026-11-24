@@ -2,141 +2,121 @@
 require_once __DIR__ . '/config/db.php';
 include __DIR__ . '/layout/header.php';
 
-// Ringkasan angka dashboard
-$totalMaterial = $pdo->query("SELECT COUNT(*) FROM material")->fetchColumn();
-$totalKemasan  = $pdo->query("SELECT COUNT(*) FROM kemasan_qr WHERE status_kemasan != 'Habis'")->fetchColumn();
-$pendingKeluar = $pdo->query("SELECT COUNT(*) FROM barang_keluar WHERE status_approval = 'Pending Approval'")->fetchColumn();
+$totalMaterial = (int)$pdo->query("SELECT COUNT(*) FROM material")->fetchColumn();
+$totalKemasan  = (int)$pdo->query("SELECT COUNT(*) FROM kemasan_qr WHERE status_kemasan != 'Habis'")->fetchColumn();
+$pendingKeluar = (int)$pdo->query("SELECT COUNT(*) FROM barang_keluar WHERE status_approval = 'Pending Approval'")->fetchColumn();
+$totalProyek   = (int)$pdo->query("SELECT COUNT(*) FROM proyek WHERE status_proyek = 'Berjalan'")->fetchColumn();
 
-// Query 2 Fase 3: Alert Restock (Stok < Batas Minimum)
-$stmtRestock = $pdo->query("
+$restockList = $pdo->query("
     SELECT id_material, nama_material, kategori, merek, total_stok, batas_minimum, satuan,
            (batas_minimum - total_stok) AS jumlah_harus_restock
     FROM material
     WHERE total_stok < batas_minimum
     ORDER BY jumlah_harus_restock DESC
-");
-$restockList = $stmtRestock->fetchAll();
+")->fetchAll();
 
-// Query 1 Fase 3: Monitoring Stok per Section & Kode QR
-$stmtQr = $pdo->query("
-    SELECT k.section_gudang, k.kode_qr, m.id_material, m.nama_material, m.merek,
+$qrList = $pdo->query("
+    SELECT k.section_gudang, k.kode_qr, m.id_material, m.nama_material, m.kategori, m.merek,
            k.qty_awal, k.qty_sisa, m.satuan, k.status_kemasan
     FROM kemasan_qr k
     JOIN material m ON k.id_material = m.id_material
     ORDER BY k.section_gudang ASC, k.kode_qr ASC
-");
-$qrList = $stmtQr->fetchAll();
+")->fetchAll();
+
+function renderQrArc(int $percent, string $color): string {
+    $percent = max(5, min(100, $percent));
+    $dashArray = 63;
+    $dashOffset = $dashArray - ($dashArray * $percent / 100);
+    return <<<SVG
+    <div class="d-flex flex-column align-items-center" style="width: 68px;">
+        <svg width="56" height="32" viewBox="0 0 56 32">
+            <path d="M 8 28 A 20 20 0 0 1 48 28" fill="none" stroke="#E5E7EB" stroke-width="5.5" stroke-linecap="round"/>
+            <path d="M 8 28 A 20 20 0 0 1 48 28" fill="none" stroke="{$color}" stroke-width="5.5" stroke-linecap="round"
+                  stroke-dasharray="{$dashArray}" stroke-dashoffset="{$dashOffset}"/>
+        </svg>
+        <span style="font-size: 0.68rem; font-weight: 700; color: {$color}; margin-top: -6px;">{$percent}%</span>
+    </div>
+SVG;
+}
 ?>
 
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <div>
-        <h3 class="fw-bold mb-0">Dashboard Gudang & Inventori QR</h3>
-        <p class="text-muted mb-0">Monitoring stok material konstruksi irigasi & olahraga secara real-time</p>
+<header class="saas-topbar">
+    <div class="d-flex align-items-center gap-3 flex-wrap">
+        <h1 class="saas-title">Warehouse Analytics & QR Stock</h1>
+        <form action="/barang/index.php" method="GET" class="top-search">
+            <i class="bi bi-search"></i>
+            <input type="text" name="q" placeholder="Search Material or QR...">
+        </form>
     </div>
-    <div>
-        <a href="/barang/create.php" class="btn btn-primary me-2"><i class="bi bi-plus-circle me-1"></i>Tambah Material</a>
-        <a href="/transaksi_qr/create.php" class="btn btn-warning fw-semibold"><i class="bi bi-qr-code me-1"></i>Input Barang Keluar</a>
+    <div class="d-flex align-items-center gap-2">
+        <a href="/barang/index.php" class="btn-toolbar-white"><i class="bi bi-box-seam"></i> All Material List</a>
+        <a href="/transaksi_qr/create.php" class="btn-toolbar-orange"><i class="bi bi-qr-code-scan"></i> Scan Barang Keluar</a>
     </div>
-</div>
+</header>
 
-<!-- Kartu Ringkasan -->
-<div class="row g-3 mb-4">
-    <div class="col-md-4">
-        <div class="card border-0 shadow-sm border-start border-primary border-4">
-            <div class="card-body">
-                <div class="text-muted small">Total Jenis Material</div>
-                <div class="fs-3 fw-bold"><?= $totalMaterial ?> <span class="fs-6 fw-normal text-muted">Item</span></div>
+<main class="p-4">
+    <!-- 5-Column Statistic Card -->
+    <div class="stat-box-card">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <span class="fw-semibold" style="font-size: 0.92rem; color: var(--ta-navy);">Warehouse Overview</span>
+            <span class="badge-pill-soft" style="color: var(--ta-green); background: #ECFDF5;">&#9679; Live PostgreSQL</span>
+        </div>
+        <div class="row g-3">
+            <div class="col-6 col-md stat-col-item">
+                <div class="stat-lbl">Total Material</div>
+                <div class="stat-val"><?= $totalMaterial ?> <small>Jenis</small></div>
+            </div>
+            <div class="col-6 col-md stat-col-item">
+                <div class="stat-lbl">Kemasan QR Aktif</div>
+                <div class="stat-val" style="color: var(--ta-blue);"><?= $totalKemasan ?> <small>Batch</small></div>
+            </div>
+            <div class="col-6 col-md stat-col-item">
+                <div class="stat-lbl">Stock Condition</div>
+                <div class="stat-val" style="color: var(--ta-green);"><i class="bi bi-graph-up-arrow me-1"></i>Optimal</div>
+            </div>
+            <div class="col-6 col-md stat-col-item">
+                <div class="stat-lbl">Pending Approval</div>
+                <div class="stat-val" style="color: var(--ta-orange);"><?= $pendingKeluar ?> <small>Pengajuan</small></div>
+            </div>
+            <div class="col-12 col-md stat-col-item">
+                <div class="stat-lbl">Active Projects</div>
+                <div class="stat-val"><?= $totalProyek ?> <small>Kontrak</small></div>
             </div>
         </div>
     </div>
-    <div class="col-md-4">
-        <div class="card border-0 shadow-sm border-start border-success border-4">
-            <div class="card-body">
-                <div class="text-muted small">Kemasan QR Aktif di Gudang</div>
-                <div class="fs-3 fw-bold"><?= $totalKemasan ?> <span class="fs-6 fw-normal text-muted">Kemasan/Batch</span></div>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-4">
-        <div class="card border-0 shadow-sm border-start border-danger border-4">
-            <div class="card-body">
-                <div class="text-muted small">Pengajuan Keluar Menunggu Approval</div>
-                <div class="fs-3 fw-bold"><?= $pendingKeluar ?> <span class="fs-6 fw-normal text-muted">Transaksi</span></div>
-            </div>
-        </div>
-    </div>
-</div>
 
-<!-- Alert Restock -->
-<?php if (count($restockList) > 0): ?>
-<div class="card border-0 shadow-sm mb-4">
-    <div class="card-header bg-danger text-white fw-semibold">
-        <i class="bi bi-exclamation-triangle-fill me-2"></i>Peringatan Restock: Material di Bawah Batas Minimum
-    </div>
-    <div class="card-body p-0">
+    <?php if (count($restockList) > 0): ?>
+    <div class="dribbble-list mb-4" style="border-color: #FED7AA;">
+        <div class="px-3 py-2 d-flex justify-content-between align-items-center" style="background: #FFF7ED; border-bottom: 1px solid #FED7AA;">
+            <span class="fw-semibold" style="color: var(--ta-orange); font-size: 0.83rem;">
+                <i class="bi bi-exclamation-triangle-fill me-2"></i>Peringatan Restock: <?= count($restockList) ?> Material di Bawah Batas Minimum
+            </span>
+            <a href="/barang/index.php?sort=stok_asc" class="text-decoration-none fw-semibold" style="color: var(--ta-navy); font-size: 0.78rem;">Lihat Semua &rarr;</a>
+        </div>
         <div class="table-responsive">
-            <table class="table table-hover mb-0 align-middle">
-                <thead class="table-light">
-                    <tr>
-                        <th>ID</th>
-                        <th>Nama Material</th>
-                        <th>Merek</th>
-                        <th>Stok Saat Ini</th>
-                        <th>Batas Minimum</th>
-                        <th>Kekurangan</th>
-                    </tr>
-                </thead>
+            <table class="dribbble-table">
                 <tbody>
                     <?php foreach ($restockList as $r): ?>
                     <tr>
-                        <td><span class="badge bg-secondary"><?= htmlspecialchars($r['id_material']) ?></span></td>
-                        <td class="fw-semibold"><?= htmlspecialchars($r['nama_material']) ?></td>
-                        <td><?= htmlspecialchars($r['merek']) ?></td>
-                        <td class="text-danger fw-bold"><?= $r['total_stok'] . ' ' . htmlspecialchars($r['satuan']) ?></td>
-                        <td><?= $r['batas_minimum'] . ' ' . htmlspecialchars($r['satuan']) ?></td>
-                        <td><span class="badge bg-danger">Kurang <?= $r['jumlah_harus_restock'] . ' ' . htmlspecialchars($r['satuan']) ?></span></td>
-                    </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
-        </div>
-    </div>
-</div>
-<?php endif; ?>
-
-<!-- Monitoring Kemasan QR per Section -->
-<div class="card border-0 shadow-sm">
-    <div class="card-header bg-white fw-bold py-3">
-        <i class="bi bi-grid-3x3-gap-fill me-2 text-primary"></i>Monitoring Stok per Rak / Section & Kode QR
-    </div>
-    <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table table-striped table-hover mb-0 align-middle">
-                <thead class="table-dark">
-                    <tr>
-                        <th>Section Gudang</th>
-                        <th>Kode QR</th>
-                        <th>Material</th>
-                        <th>Merek</th>
-                        <th>Qty Awal</th>
-                        <th>Qty Sisa</th>
-                        <th>Status Kemasan</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php foreach ($qrList as $q): ?>
-                    <tr>
-                        <td><?= htmlspecialchars($q['section_gudang']) ?></td>
-                        <td><code><?= htmlspecialchars($q['kode_qr']) ?></code></td>
-                        <td class="fw-semibold"><?= htmlspecialchars($q['nama_material']) ?></td>
-                        <td><?= htmlspecialchars($q['merek']) ?></td>
-                        <td><?= $q['qty_awal'] ?></td>
-                        <td class="fw-bold"><?= $q['qty_sisa'] . ' ' . htmlspecialchars($q['satuan']) ?></td>
                         <td>
-                            <?php
-                            $badge = $q['status_kemasan'] === 'Tersedia' ? 'bg-success' : ($q['status_kemasan'] === 'Sebagian Terpakai' ? 'bg-warning text-dark' : 'bg-secondary');
-                            ?>
-                            <span class="badge <?= $badge ?>"><?= htmlspecialchars($q['status_kemasan']) ?></span>
+                            <div class="d-flex align-items-center gap-3">
+                                <div class="prod-thumb" style="background: #FFF7ED; color: var(--ta-orange); border-color: #FED7AA;"><i class="bi bi-box-seam"></i></div>
+                                <div>
+                                    <div class="col-main-val"><?= htmlspecialchars($r['nama_material']) ?></div>
+                                    <div class="col-micro-lbl mb-0"><?= htmlspecialchars($r['id_material']) ?> &bull; <?= htmlspecialchars($r['merek']) ?></div>
+                                </div>
+                            </div>
+                        </td>
+                        <td>
+                            <div class="col-micro-lbl">Current Stock</div>
+                            <div class="col-main-val text-danger"><?= $r['total_stok'] . ' ' . htmlspecialchars($r['satuan']) ?></div>
+                        </td>
+                        <td>
+                            <div class="col-micro-lbl">Minimum Limit</div>
+                            <div class="col-main-val"><?= $r['batas_minimum'] . ' ' . htmlspecialchars($r['satuan']) ?></div>
+                        </td>
+                        <td class="text-end">
+                            <span class="badge-pill-red">Kurang <?= $r['jumlah_harus_restock'] . ' ' . htmlspecialchars($r['satuan']) ?></span>
                         </td>
                     </tr>
                     <?php endforeach; ?>
@@ -144,6 +124,58 @@ $qrList = $stmtQr->fetchAll();
             </table>
         </div>
     </div>
-</div>
+    <?php endif; ?>
+
+    <div id="rak-qr" class="d-flex justify-content-between align-items-center mb-2">
+        <span class="fw-bold" style="color: var(--ta-navy); font-size: 0.95rem;">Monitoring Kemasan QR per Section Gudang</span>
+        <span class="text-muted" style="font-size: 0.78rem;"><?= count($qrList) ?> Batch Terdaftar</span>
+    </div>
+
+    <div class="dribbble-list">
+        <div class="table-responsive">
+            <table class="dribbble-table">
+                <tbody>
+                    <?php foreach ($qrList as $q):
+                        $persen = $q['qty_awal'] > 0 ? (int)round(($q['qty_sisa'] / $q['qty_awal']) * 100) : 0;
+                        $arcColor = $persen > 60 ? '#135E38' : ($persen > 25 ? '#F38218' : '#DC2626');
+                        $labelKondisi = $persen > 60 ? 'Excellent' : ($persen > 25 ? 'Good' : 'Low');
+                    ?>
+                    <tr>
+                        <td style="min-width: 240px;">
+                            <div class="d-flex align-items-center gap-3">
+                                <div class="prod-thumb"><i class="bi bi-qr-code"></i></div>
+                                <div>
+                                    <div class="col-main-val" style="color: var(--ta-navy);"><?= htmlspecialchars($q['nama_material']) ?></div>
+                                    <div class="col-micro-lbl mb-0">
+                                        QR: <strong style="color: var(--ta-blue);"><?= htmlspecialchars($q['kode_qr']) ?></strong>
+                                        &bull; <?= htmlspecialchars($q['merek']) ?>
+                                    </div>
+                                </div>
+                            </div>
+                        </td>
+                        <td>
+                            <div class="col-micro-lbl">Capacity <span class="fw-semibold" style="color: <?= $arcColor ?>;"><?= $labelKondisi ?></span></div>
+                            <div style="font-size: 0.78rem; color: var(--text-muted);">
+                                <i class="bi bi-geo-alt me-1"></i><?= htmlspecialchars($q['section_gudang']) ?>
+                            </div>
+                        </td>
+                        <td style="width: 90px;" class="text-center">
+                            <?= renderQrArc($persen, $arcColor) ?>
+                        </td>
+                        <td>
+                            <div class="col-micro-lbl">Remaining</div>
+                            <div class="col-main-val"><?= $q['qty_sisa'] ?> <span class="fw-normal text-muted">/ <?= $q['qty_awal'] . ' ' . htmlspecialchars($q['satuan']) ?></span></div>
+                        </td>
+                        <td>
+                            <div class="col-micro-lbl">Status</div>
+                            <span class="saas-switch <?= $q['qty_sisa'] > 0 ? 'on' : '' ?>"></span>
+                        </td>
+                    </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</main>
 
 <?php include __DIR__ . '/layout/footer.php'; ?>
