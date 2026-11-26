@@ -1,5 +1,5 @@
 -- ============================================================================
--- 1. CREATE TABLE (10 TABEL INTI SCM & QR INVENTORY PT TRI ARTA KONSTRUKSI)
+-- 1. CREATE TABLE (11 TABEL INTI SCM, QR INVENTORY & CRM LEADS PT TRI ARTA KONSTRUKSI)
 -- ============================================================================
 
 CREATE TABLE jabatan (
@@ -13,7 +13,9 @@ CREATE TABLE staf (
     id_jabatan VARCHAR(10) NOT NULL REFERENCES jabatan(id_jabatan) ON UPDATE CASCADE ON DELETE RESTRICT,
     nama VARCHAR(100) NOT NULL,
     kontak VARCHAR(20) NOT NULL,
-    email VARCHAR(100) NOT NULL UNIQUE
+    email VARCHAR(100) NOT NULL UNIQUE,
+    username VARCHAR(50) UNIQUE,
+    password_hash VARCHAR(255)
 );
 
 CREATE TABLE proyek (
@@ -41,7 +43,8 @@ CREATE TABLE material (
     spesifikasi_teknis TEXT,
     total_stok INT NOT NULL DEFAULT 0 CHECK (total_stok >= 0),
     batas_minimum INT NOT NULL DEFAULT 10 CHECK (batas_minimum >= 0),
-    satuan VARCHAR(20) NOT NULL
+    satuan VARCHAR(20) NOT NULL,
+    gambar VARCHAR(255)
 );
 
 CREATE TABLE kemasan_qr (
@@ -97,11 +100,22 @@ CREATE TABLE detail_keluar (
     keterangan TEXT
 );
 
+CREATE TABLE leads (
+    id_lead SERIAL PRIMARY KEY,
+    nama_klien VARCHAR(100) NOT NULL,
+    sumber_informasi VARCHAR(50) CHECK (sumber_informasi IN ('WhatsApp', 'Kabar Burung', 'Relasi', 'Lainnya')),
+    tahapan_pipeline VARCHAR(50) NOT NULL DEFAULT 'New Lead' CHECK (tahapan_pipeline IN ('New Lead', 'Opportunity', 'Site Visit', 'Quotation', 'Win', 'Loss')),
+    alasan_loss TEXT,
+    tanggal_masuk TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    id_staf_pic VARCHAR(10) REFERENCES staf(id_staf) ON UPDATE CASCADE ON DELETE SET NULL
+);
+
 CREATE INDEX idx_kemasan_material_section ON kemasan_qr(id_material, section_gudang, status_kemasan);
 CREATE INDEX idx_material_reorder ON material(total_stok, batas_minimum);
 CREATE INDEX idx_barang_masuk_tgl ON barang_masuk(tgl_masuk DESC, id_vendor);
 CREATE INDEX idx_barang_keluar_proyek_status ON barang_keluar(id_proyek, status_approval);
 CREATE INDEX idx_detail_keluar_qr ON detail_keluar(kode_qr, waktu_scan DESC);
+CREATE INDEX idx_leads_pipeline_tgl ON leads(tahapan_pipeline, tanggal_masuk DESC);
 
 -- ============================================================================
 -- 3. INSERT DATA CONTOH (SESUAI COMPANY PROFILE PT TRI ARTA KONSTRUKSI)
@@ -115,13 +129,14 @@ INSERT INTO jabatan VALUES
 ('JBT-05', 'Kepala Logistik & Admin QR', 'Admin Gudang'),
 ('JBT-06', 'Site Engineer & QS Lapangan', 'Pelaksana Proyek');
 
-INSERT INTO staf VALUES
-('STF-001', 'JBT-01', 'Ismail Sahid', '081389800851', 'ismail.sahid@triartakonstruksi.co.id'),
-('STF-002', 'JBT-02', 'Taufan Kusuma Negara', '081389800852', 'taufan.kusuma@triartakonstruksi.co.id'),
-('STF-003', 'JBT-03', 'Dofa Mairika Perdana Putra', '081389800853', 'dofa.mairika@triartakonstruksi.co.id'),
-('STF-004', 'JBT-04', 'Reza Fauzi Indra Utama', '081389800854', 'reza.fauzi@triartakonstruksi.co.id'),
-('STF-005', 'JBT-05', 'Dimas Saputra', '081389800855', 'dimas.logistik@triartakonstruksi.co.id'),
-('STF-006', 'JBT-06', 'Rizky Pratama', '081389800856', 'rizky.qs@triartakonstruksi.co.id');
+-- Password default seluruh akun staf: triarta123 (bcrypt PASSWORD_DEFAULT)
+INSERT INTO staf (id_staf, id_jabatan, nama, kontak, email, username, password_hash) VALUES
+('STF-001', 'JBT-01', 'Ismail Sahid', '081389800851', 'ismail.sahid@triartakonstruksi.co.id', 'ismail.sahid', '$2y$12$tjSxtPlLZLLE6XIkK/BnOezHF0UhpH8O4r9HcstLbgKtJKWwMskxG'),
+('STF-002', 'JBT-02', 'Taufan Kusuma Negara', '081389800852', 'taufan.kusuma@triartakonstruksi.co.id', 'taufan.kusuma', '$2y$12$tjSxtPlLZLLE6XIkK/BnOezHF0UhpH8O4r9HcstLbgKtJKWwMskxG'),
+('STF-003', 'JBT-03', 'Dofa Mairika Perdana Putra', '081389800853', 'dofa.mairika@triartakonstruksi.co.id', 'dofa.mairika', '$2y$12$tjSxtPlLZLLE6XIkK/BnOezHF0UhpH8O4r9HcstLbgKtJKWwMskxG'),
+('STF-004', 'JBT-04', 'Reza Fauzi Indra Utama', '081389800854', 'reza.fauzi@triartakonstruksi.co.id', 'reza.fauzi', '$2y$12$tjSxtPlLZLLE6XIkK/BnOezHF0UhpH8O4r9HcstLbgKtJKWwMskxG'),
+('STF-005', 'JBT-05', 'Dimas Saputra', '081389800855', 'dimas.logistik@triartakonstruksi.co.id', 'dimas.logistik', '$2y$12$tjSxtPlLZLLE6XIkK/BnOezHF0UhpH8O4r9HcstLbgKtJKWwMskxG'),
+('STF-006', 'JBT-06', 'Rizky Pratama', '081389800856', 'rizky.qs@triartakonstruksi.co.id', 'rizky.qs', '$2y$12$tjSxtPlLZLLE6XIkK/BnOezHF0UhpH8O4r9HcstLbgKtJKWwMskxG');
 
 INSERT INTO proyek VALUES
 ('PRJ-2026-001', 'SPK/TAK/2024/06-001', 'Irigasi Lapangan Sepak Bola Stadion Sriwedari', 'Surakarta (Solo), Jawa Tengah', '2024-06-01', '2024-11-30', 'Selesai'),
@@ -137,7 +152,7 @@ INSERT INTO vendor VALUES
 ('VND-004', 'CV Mitra Pipa Nusantara', '081377665544', 'Jl. Sholeh Iskandar No. 45, Kota Bogor'),
 ('VND-005', 'PT Sintetis & Rubber Sport Indonesia', '02188990011', 'Kawasan Industri Jababeka, Cikarang');
 
-INSERT INTO material VALUES
+INSERT INTO material (id_material, nama_material, kategori, merek, spesifikasi_teknis, total_stok, batas_minimum, satuan) VALUES
 ('MAT-001', 'Sprinkler Rotor', 'Irigasi', 'Rain Bird', 'Rain Bird 5004 Rotor Sprinkler', 26, 15, 'Unit'),
 ('MAT-002', 'Pipa PVC AW 2 Inch', 'Perpipaan', 'Wavin', 'Pipa PVC Wavin AW 2 inch panjang 4m', 50, 30, 'Batang'),
 ('MAT-003', 'Irrigation Controller', 'Kontrol & Otomasi', 'Rain Bird', 'ESP-TM2 8-Station Irrigation Controller', 4, 5, 'Unit'),
@@ -190,47 +205,9 @@ INSERT INTO detail_keluar VALUES
 ('DOUT-2026-007', 'OUT-2026-003', 'QR-SEC-D2-001', 12, '2026-04-15 10:10:00', 'Scan keluar 12 set junction box dari Section D2'),
 ('DOUT-2026-008', 'OUT-2026-004', 'QR-SEC-A2-001', 4, '2026-04-18 11:00:00', 'Scan keluar 4 roll selang LDPE dari Section A2');
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+-- ============================================================================
+-- QUERY MONITORING & ANALITIK REFERENSI
+-- ============================================================================
 -- QUERY 1: Monitoring Stok Gudang per Section & Kode QR (Tampilan Utama SCM Dashboard)
 SELECT k.section_gudang, k.kode_qr, m.id_material, m.nama_material, m.merek,
        k.qty_awal, k.qty_sisa, m.satuan, k.status_kemasan
@@ -279,3 +256,37 @@ LEFT JOIN barang_keluar bk ON p.id_proyek = bk.id_proyek AND bk.status_approval 
 LEFT JOIN detail_keluar dk ON bk.id_keluar = dk.id_keluar
 GROUP BY p.no_kontrak, p.nama_proyek, p.status_proyek
 ORDER BY total_unit_material_terpakai DESC;
+
+-- ============================================================================
+-- 4. MIGRASI AMAN AUTENTIKASI STAF (UNTUK DATABASE EKSISTING)
+-- ============================================================================
+ALTER TABLE staf ADD COLUMN IF NOT EXISTS username VARCHAR(50) UNIQUE;
+ALTER TABLE staf ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
+
+UPDATE staf
+SET username = SPLIT_PART(email, '@', 1)
+WHERE username IS NULL OR username = '';
+
+UPDATE staf
+SET password_hash = '$2y$12$tjSxtPlLZLLE6XIkK/BnOezHF0UhpH8O4r9HcstLbgKtJKWwMskxG'
+WHERE password_hash IS NULL OR password_hash = '';
+
+-- ============================================================================
+-- 5. MIGRASI AMAN TABEL CRM LEADS (UNTUK DATABASE EKSISTING)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS leads (
+    id_lead SERIAL PRIMARY KEY,
+    nama_klien VARCHAR(100) NOT NULL,
+    sumber_informasi VARCHAR(50) CHECK (sumber_informasi IN ('WhatsApp', 'Kabar Burung', 'Relasi', 'Lainnya')),
+    tahapan_pipeline VARCHAR(50) NOT NULL DEFAULT 'New Lead' CHECK (tahapan_pipeline IN ('New Lead', 'Opportunity', 'Site Visit', 'Quotation', 'Win', 'Loss')),
+    alasan_loss TEXT,
+    tanggal_masuk TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    id_staf_pic VARCHAR(10) REFERENCES staf(id_staf) ON UPDATE CASCADE ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_leads_pipeline_tgl ON leads(tahapan_pipeline, tanggal_masuk DESC);
+
+-- ============================================================================
+-- 6. MIGRASI AMAN KOLOM GAMBAR MATERIAL (UNTUK DATABASE EKSISTING)
+-- ============================================================================
+ALTER TABLE material ADD COLUMN IF NOT EXISTS gambar VARCHAR(255);

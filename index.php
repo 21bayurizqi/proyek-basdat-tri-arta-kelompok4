@@ -1,181 +1,609 @@
 <?php
+require_once __DIR__ . '/config/auth.php';
+requireAuth();
 require_once __DIR__ . '/config/db.php';
 include __DIR__ . '/layout/header.php';
 
+// 1. Data SCM / Warehouse (Live PostgreSQL)
 $totalMaterial = (int)$pdo->query("SELECT COUNT(*) FROM material")->fetchColumn();
-$totalKemasan  = (int)$pdo->query("SELECT COUNT(*) FROM kemasan_qr WHERE status_kemasan != 'Habis'")->fetchColumn();
+$totalUnitAll  = (int)$pdo->query("SELECT COALESCE(SUM(total_stok), 0) FROM material")->fetchColumn();
 $pendingKeluar = (int)$pdo->query("SELECT COUNT(*) FROM barang_keluar WHERE status_approval = 'Pending Approval'")->fetchColumn();
-$totalProyek   = (int)$pdo->query("SELECT COUNT(*) FROM proyek WHERE status_proyek = 'Berjalan'")->fetchColumn();
 
-$restockList = $pdo->query("
-    SELECT id_material, nama_material, kategori, merek, total_stok, batas_minimum, satuan,
+$restockTop5 = $pdo->query("
+    SELECT id_material, nama_material, kategori, merek, total_stok, batas_minimum, satuan, gambar,
            (batas_minimum - total_stok) AS jumlah_harus_restock
     FROM material
     WHERE total_stok < batas_minimum
-    ORDER BY jumlah_harus_restock DESC
+    ORDER BY jumlah_harus_restock DESC, id_material ASC
+    LIMIT 5
 ")->fetchAll();
 
-$qrList = $pdo->query("
-    SELECT k.section_gudang, k.kode_qr, m.id_material, m.nama_material, m.kategori, m.merek,
-           k.qty_awal, k.qty_sisa, m.satuan, k.status_kemasan
-    FROM kemasan_qr k
-    JOIN material m ON k.id_material = m.id_material
-    ORDER BY k.section_gudang ASC, k.kode_qr ASC
+$lowStockCount  = (int)$pdo->query("SELECT COUNT(*) FROM material WHERE total_stok < batas_minimum")->fetchColumn();
+$safeStockCount = max(0, $totalMaterial - $lowStockCount);
+$isMaterialDummy = ($totalMaterial === 0);
+if ($isMaterialDummy) {
+    $safeStockCount = 6;
+    $lowStockCount  = 2;
+    $totalMaterial  = 8;
+}
+$stockHealthPct = $totalMaterial > 0 ? (int)round(($safeStockCount / $totalMaterial) * 100) : 100;
+
+// 2. Distribusi Kategori Material (Live PostgreSQL + fallback jika kosong)
+$katRows = $pdo->query("
+    SELECT kategori, COUNT(*) AS jml, COALESCE(SUM(total_stok), 0) AS total_unit
+    FROM material
+    GROUP BY kategori
+    ORDER BY jml DESC, kategori ASC
 ")->fetchAll();
 
-function renderQrArc(int $percent, string $color): string {
-    $percent = max(5, min(100, $percent));
-    $dashArray = 63;
-    $dashOffset = $dashArray - ($dashArray * $percent / 100);
-    return <<<SVG
-    <div class="d-flex flex-column align-items-center" style="width: 68px;">
-        <svg width="56" height="32" viewBox="0 0 56 32">
-            <path d="M 8 28 A 20 20 0 0 1 48 28" fill="none" stroke="#E5E7EB" stroke-width="5.5" stroke-linecap="round"/>
-            <path d="M 8 28 A 20 20 0 0 1 48 28" fill="none" stroke="{$color}" stroke-width="5.5" stroke-linecap="round"
-                  stroke-dasharray="{$dashArray}" stroke-dashoffset="{$dashOffset}"/>
-        </svg>
-        <span style="font-size: 0.68rem; font-weight: 700; color: {$color}; margin-top: -6px;">{$percent}%</span>
-    </div>
-SVG;
+if (count($katRows) === 0) {
+    $katRows = [
+        ['kategori' => 'Irigasi',           'jml' => 3, 'total_unit' => 38],
+        ['kategori' => 'Perpipaan',         'jml' => 2, 'total_unit' => 110],
+        ['kategori' => 'Elektrikal',        'jml' => 2, 'total_unit' => 163],
+        ['kategori' => 'Kontrol & Otomasi', 'jml' => 1, 'total_unit' => 4],
+    ];
+}
+$katLabels = array_column($katRows, 'kategori');
+$katCounts = array_map('intval', array_column($katRows, 'jml'));
+$katUnits  = array_map('intval', array_column($katRows, 'total_unit'));
+
+// 3. Data CRM / Leads Pipeline & Win/Loss Ratio (Live PostgreSQL + fallback proporsional jika kosong)
+$funnelStages = ['New Lead', 'Opportunity', 'Site Visit', 'Quotation'];
+$stageCounts  = [
+    'New Lead'    => 0,
+    'Opportunity' => 0,
+    'Site Visit'  => 0,
+    'Quotation'   => 0,
+    'Win'         => 0,
+    'Loss'        => 0,
+];
+$isLeadsDummy = false;
+
+try {
+    $leadRows = $pdo->query("
+        SELECT tahapan_pipeline, COUNT(*) AS jml
+        FROM leads
+        GROUP BY tahapan_pipeline
+    ")->fetchAll();
+
+    $totalLeadsDb = 0;
+    foreach ($leadRows as $lr) {
+        $st = $lr['tahapan_pipeline'];
+        $cn = (int)$lr['jml'];
+        if (array_key_exists($st, $stageCounts)) {
+            $stageCounts[$st] = $cn;
+        }
+        $totalLeadsDb += $cn;
+    }
+
+    if ($totalLeadsDb === 0) {
+        $isLeadsDummy = true;
+        $stageCounts = [
+            'New Lead'    => 8,
+            'Opportunity' => 6,
+            'Site Visit'  => 4,
+            'Quotation'   => 3,
+            'Win'         => 6,
+            'Loss'        => 2,
+        ];
+    }
+} catch (PDOException $e) {
+    $isLeadsDummy = true;
+    $stageCounts = [
+        'New Lead'    => 8,
+        'Opportunity' => 6,
+        'Site Visit'  => 4,
+        'Quotation'   => 3,
+        'Win'         => 6,
+        'Loss'        => 2,
+    ];
+}
+
+$funnelCounts = [
+    $stageCounts['New Lead'],
+    $stageCounts['Opportunity'],
+    $stageCounts['Site Visit'],
+    $stageCounts['Quotation'],
+];
+$leadsAktif  = array_sum($funnelCounts);
+$leadsWin    = $stageCounts['Win'];
+$leadsLoss   = $stageCounts['Loss'];
+$leadsClosed = $leadsWin + $leadsLoss;
+$winRatePct  = $leadsClosed > 0 ? (int)round(($leadsWin / $leadsClosed) * 100) : 0;
+
+// Fallback proporsional untuk Pie Chart Win/Loss bila belum ada prospek berstatus Win/Loss
+$isWinLossDummy = $isLeadsDummy;
+$pieWin  = $leadsWin;
+$pieLoss = $leadsLoss;
+if ($leadsClosed === 0) {
+    $isWinLossDummy = true;
+    $pieWin  = 6;
+    $pieLoss = 2;
 }
 ?>
 
+<style>
+    .analytics-card {
+        border-radius: 16px;
+        padding: 1.35rem 1.5rem;
+        height: auto;
+        display: flex;
+        flex-direction: column;
+        transition: box-shadow 0.2s ease, border-color 0.2s ease;
+    }
+    .analytics-card:hover {
+        box-shadow: 0 10px 26px rgba(6, 42, 78, 0.09) !important;
+        border-color: rgba(13, 85, 155, 0.28) !important;
+    }
+    .analytics-card-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 0.75rem;
+        margin-bottom: 1.15rem;
+    }
+    .analytics-card-title {
+        font-size: 0.96rem;
+        font-weight: 700;
+        color: var(--ta-navy);
+        margin: 0;
+        letter-spacing: -0.01em;
+    }
+    .analytics-card-sub {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+        margin-top: 2px;
+    }
+    .chart-canvas-wrap {
+        position: relative;
+        width: 100%;
+        height: 250px;
+        min-height: 250px;
+        max-height: 250px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .chart-canvas-wrap canvas {
+        max-width: 100%;
+        max-height: 100%;
+    }
+    .doughnut-center-kpi {
+        position: absolute;
+        top: 46%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        text-align: center;
+        pointer-events: none;
+    }
+    .doughnut-center-val {
+        font-size: 1.55rem;
+        font-weight: 700;
+        color: var(--ta-navy);
+        line-height: 1.1;
+    }
+    .doughnut-center-lbl {
+        font-size: 0.69rem;
+        font-weight: 600;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+    .restock-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.75rem 0.95rem;
+        border: 1px solid rgba(243, 130, 24, 0.32);
+        background: linear-gradient(135deg, rgba(255, 246, 236, 0.85) 0%, rgba(241, 246, 253, 0.85) 100%);
+        border-radius: 11px;
+        transition: border-color 0.15s ease, background 0.15s ease;
+    }
+    .restock-row:hover {
+        border-color: var(--ta-orange);
+        background: linear-gradient(135deg, rgba(255, 241, 224, 0.95) 0%, rgba(235, 243, 252, 0.95) 100%);
+    }
+</style>
+
 <header class="saas-topbar">
-    <div class="d-flex align-items-center gap-3 flex-wrap">
-        <h1 class="saas-title">Warehouse Analytics & QR Stock</h1>
-        <form action="/barang/index.php" method="GET" class="top-search">
-            <i class="bi bi-search"></i>
-            <input type="text" name="q" placeholder="Search Material or QR...">
-        </form>
+    <div>
+        <h1 class="saas-title">Executive Summary</h1>
+        <div class="text-muted" style="font-size: 0.8rem;">Dashboard analitik inventaris gudang (SCM) &amp; performa pipeline proyek (CRM)</div>
     </div>
-    <div class="d-flex align-items-center gap-2">
-        <a href="/barang/index.php" class="btn-toolbar-white"><i class="bi bi-box-seam"></i> All Material List</a>
-        <a href="/transaksi_qr/create.php" class="btn-toolbar-orange"><i class="bi bi-qr-code-scan"></i> Scan Barang Keluar</a>
+    <div class="d-flex align-items-center gap-2 flex-wrap">
+        <a href="/barang/index.php" class="btn-toolbar-white"><i class="bi bi-box-seam"></i> Warehouse SCM</a>
+        <a href="/leads/index.php" class="btn-toolbar-primary"><i class="bi bi-speedometer2"></i> CRM Leads</a>
+        <a href="/transaksi_qr/index.php" class="btn-toolbar-orange"><i class="bi bi-qr-code-scan"></i> Scan QR Keluar</a>
     </div>
 </header>
 
 <main class="p-4">
-    <!-- 5-Column Statistic Card -->
-    <div class="stat-box-card">
-        <div class="d-flex justify-content-between align-items-center mb-3">
-            <span class="fw-semibold" style="font-size: 0.92rem; color: var(--ta-navy);">Warehouse Overview</span>
-            <span class="badge-pill-soft" style="color: var(--ta-green); background: #ECFDF5;">&#9679; Live PostgreSQL</span>
-        </div>
+    <!-- Ringkasan KPI Cepat (5 Kolom) -->
+    <div class="stat-box-card mb-4" style="border-radius: 16px; box-shadow: 0 4px 20px rgba(6, 42, 78, 0.04);">
         <div class="row g-3">
             <div class="col-6 col-md stat-col-item">
                 <div class="stat-lbl">Total Material</div>
                 <div class="stat-val"><?= $totalMaterial ?> <small>Jenis</small></div>
             </div>
             <div class="col-6 col-md stat-col-item">
-                <div class="stat-lbl">Kemasan QR Aktif</div>
-                <div class="stat-val" style="color: var(--ta-blue);"><?= $totalKemasan ?> <small>Batch</small></div>
+                <div class="stat-lbl">Total Stok Gudang</div>
+                <div class="stat-val" style="color: var(--ta-blue);"><?= number_format($totalUnitAll) ?> <small>Unit</small></div>
             </div>
             <div class="col-6 col-md stat-col-item">
-                <div class="stat-lbl">Stock Condition</div>
-                <div class="stat-val" style="color: var(--ta-green);"><i class="bi bi-graph-up-arrow me-1"></i>Optimal</div>
+                <div class="stat-lbl">Barang Low Stock</div>
+                <div class="stat-val" style="color: <?= $lowStockCount > 0 ? '#DC2626' : 'var(--ta-green)' ?>;"><?= $lowStockCount ?> <small>Kritis</small></div>
             </div>
             <div class="col-6 col-md stat-col-item">
-                <div class="stat-lbl">Pending Approval</div>
-                <div class="stat-val" style="color: var(--ta-orange);"><?= $pendingKeluar ?> <small>Pengajuan</small></div>
+                <div class="stat-lbl">Leads Aktif</div>
+                <div class="stat-val" style="color: var(--ta-orange);"><?= $leadsAktif ?> <small>Prospek</small></div>
             </div>
             <div class="col-12 col-md stat-col-item">
-                <div class="stat-lbl">Active Projects</div>
-                <div class="stat-val"><?= $totalProyek ?> <small>Kontrak</small></div>
+                <div class="stat-lbl">Win Rate Proyek</div>
+                <div class="stat-val" style="color: var(--ta-green);"><?= $winRatePct ?>% <small>(<?= $leadsWin ?> Win / <?= $leadsLoss ?> Loss)</small></div>
             </div>
         </div>
     </div>
 
-    <?php if (count($restockList) > 0): ?>
-    <div class="dribbble-list mb-4" style="border-color: #FED7AA;">
-        <div class="px-3 py-2 d-flex justify-content-between align-items-center" style="background: #FFF7ED; border-bottom: 1px solid #FED7AA;">
-            <span class="fw-semibold" style="color: var(--ta-orange); font-size: 0.83rem;">
-                <i class="bi bi-exclamation-triangle-fill me-2"></i>Peringatan Restock: <?= count($restockList) ?> Material di Bawah Batas Minimum
-            </span>
-            <a href="/barang/index.php?sort=stok_asc" class="text-decoration-none fw-semibold" style="color: var(--ta-navy); font-size: 0.78rem;">Lihat Semua &rarr;</a>
+    <!-- Grid 4 Grafik Analitik (2x2 di layar besar) -->
+    <div class="row g-4 mb-4">
+        <!-- CHART 1: Kesehatan Stok Material (Doughnut) -->
+        <div class="col-lg-6">
+            <div class="analytics-card h-100">
+                <div class="analytics-card-head">
+                    <div>
+                        <h2 class="analytics-card-title">Kesehatan Stok Material</h2>
+                        <div class="analytics-card-sub">Perbandingan porsi material stok aman vs kritis (low stock)</div>
+                    </div>
+                    <span class="badge-pill-soft" style="background: #ECFDF5; color: var(--ta-green);">
+                        <?= $safeStockCount ?> Aman &bull; <?= $lowStockCount ?> Kritis
+                    </span>
+                </div>
+                <div class="chart-canvas-wrap">
+                    <canvas id="chartStockHealth"></canvas>
+                    <div class="doughnut-center-kpi">
+                        <div class="doughnut-center-val"><?= $stockHealthPct ?>%</div>
+                        <div class="doughnut-center-lbl">Stok Aman</div>
+                    </div>
+                </div>
+            </div>
         </div>
-        <div class="table-responsive">
-            <table class="dribbble-table">
-                <tbody>
-                    <?php foreach ($restockList as $r): ?>
-                    <tr>
-                        <td>
-                            <div class="d-flex align-items-center gap-3">
-                                <div class="prod-thumb" style="background: #FFF7ED; color: var(--ta-orange); border-color: #FED7AA;"><i class="bi bi-box-seam"></i></div>
-                                <div>
-                                    <div class="col-main-val"><?= htmlspecialchars($r['nama_material']) ?></div>
-                                    <div class="col-micro-lbl mb-0"><?= htmlspecialchars($r['id_material']) ?> &bull; <?= htmlspecialchars($r['merek']) ?></div>
-                                </div>
-                            </div>
-                        </td>
-                        <td>
-                            <div class="col-micro-lbl">Current Stock</div>
-                            <div class="col-main-val text-danger"><?= $r['total_stok'] . ' ' . htmlspecialchars($r['satuan']) ?></div>
-                        </td>
-                        <td>
-                            <div class="col-micro-lbl">Minimum Limit</div>
-                            <div class="col-main-val"><?= $r['batas_minimum'] . ' ' . htmlspecialchars($r['satuan']) ?></div>
-                        </td>
-                        <td class="text-end">
-                            <span class="badge-pill-red">Kurang <?= $r['jumlah_harus_restock'] . ' ' . htmlspecialchars($r['satuan']) ?></span>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
+
+        <!-- CHART 2: Distribusi Kategori Material (Horizontal Bar) -->
+        <div class="col-lg-6">
+            <div class="analytics-card h-100">
+                <div class="analytics-card-head">
+                    <div>
+                        <h2 class="analytics-card-title">Distribusi Kategori Material</h2>
+                        <div class="analytics-card-sub">Jumlah jenis material terdaftar per kategori gudang</div>
+                    </div>
+                    <a href="/barang/index.php" class="text-decoration-none fw-semibold" style="font-size: 0.76rem; color: var(--ta-blue);">
+                        Detail &rarr;
+                    </a>
+                </div>
+                <div class="chart-canvas-wrap">
+                    <canvas id="chartCategoryDist"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- CHART 3: Sales Pipeline & Leads (Vertical Bar) -->
+        <div class="col-lg-6">
+            <div class="analytics-card h-100">
+                <div class="analytics-card-head">
+                    <div>
+                        <h2 class="analytics-card-title">Sales Pipeline &amp; Leads</h2>
+                        <div class="analytics-card-sub">Funnel jumlah prospek proyek berdasarkan tahapan aktif</div>
+                    </div>
+                    <span class="badge-pill-soft" style="<?= $isLeadsDummy ? 'background: #FFF7ED; color: var(--ta-orange);' : 'background: #ECFDF5; color: var(--ta-green);' ?>">
+                        <?= $isLeadsDummy ? 'Data Simulasi' : 'Live CRM' ?>
+                    </span>
+                </div>
+                <div class="chart-canvas-wrap">
+                    <canvas id="chartSalesPipeline"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- CHART 4: Win/Loss Ratio (Pie Chart) -->
+        <div class="col-lg-6">
+            <div class="analytics-card h-100">
+                <div class="analytics-card-head">
+                    <div>
+                        <h2 class="analytics-card-title">Win/Loss Ratio</h2>
+                        <div class="analytics-card-sub">Rasio persentase proyek yang berhasil dimenangkan vs gagal</div>
+                    </div>
+                    <div class="d-flex align-items-center gap-2">
+                        <?php if ($isWinLossDummy): ?>
+                            <span class="badge-pill-soft" style="background: #FFF7ED; color: var(--ta-orange);">Data Simulasi</span>
+                        <?php endif; ?>
+                        <a href="/leads/index.php" class="text-decoration-none fw-semibold" style="font-size: 0.76rem; color: var(--ta-orange);">
+                            CRM Pipeline &rarr;
+                        </a>
+                    </div>
+                </div>
+                <div class="chart-canvas-wrap">
+                    <canvas id="chartWinLoss"></canvas>
+                </div>
+            </div>
         </div>
     </div>
-    <?php endif; ?>
 
-    <div id="rak-qr" class="d-flex justify-content-between align-items-center mb-2">
-        <span class="fw-bold" style="color: var(--ta-navy); font-size: 0.95rem;">Monitoring Kemasan QR per Section Gudang</span>
-        <span class="text-muted" style="font-size: 0.78rem;"><?= count($qrList) ?> Batch Terdaftar</span>
-    </div>
+    <!-- Widget Call-to-Action: Prioritas Restock (Top 5 Low Stock) -->
+    <div class="analytics-card">
+        <div class="analytics-card-head mb-3">
+            <div class="d-flex align-items-center gap-2">
+                <div class="prod-thumb" style="width: 38px; height: 38px; font-size: 1rem; background: #FFF7ED; color: var(--ta-orange); border-color: #FED7AA;">
+                    <i class="bi bi-exclamation-triangle-fill"></i>
+                </div>
+                <div>
+                    <h2 class="analytics-card-title">Prioritas Restock Gudang (Top 5 Low Stock)</h2>
+                    <div class="analytics-card-sub">Material dengan stok di bawah batas minimum yang memerlukan tindakan restock segera</div>
+                </div>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+                <?php if ($pendingKeluar > 0): ?>
+                    <a href="/transaksi_qr/index.php" class="badge-pill-red text-decoration-none py-1 px-2">
+                        <?= $pendingKeluar ?> Pending QR
+                    </a>
+                <?php endif; ?>
+                <a href="/barang/index.php?sort=stok_asc" class="btn-toolbar-white" style="font-size: 0.78rem; padding: 0.35rem 0.75rem;">
+                    Lihat Semua <i class="bi bi-arrow-right"></i>
+                </a>
+            </div>
+        </div>
 
-    <div class="dribbble-list">
-        <div class="table-responsive">
-            <table class="dribbble-table">
-                <tbody>
-                    <?php foreach ($qrList as $q):
-                        $persen = $q['qty_awal'] > 0 ? (int)round(($q['qty_sisa'] / $q['qty_awal']) * 100) : 0;
-                        $arcColor = $persen > 60 ? '#135E38' : ($persen > 25 ? '#F38218' : '#DC2626');
-                        $labelKondisi = $persen > 60 ? 'Excellent' : ($persen > 25 ? 'Good' : 'Low');
-                    ?>
-                    <tr>
-                        <td style="min-width: 240px;">
-                            <div class="d-flex align-items-center gap-3">
-                                <div class="prod-thumb"><i class="bi bi-qr-code"></i></div>
-                                <div>
-                                    <div class="col-main-val" style="color: var(--ta-navy);"><?= htmlspecialchars($q['nama_material']) ?></div>
-                                    <div class="col-micro-lbl mb-0">
-                                        QR: <strong style="color: var(--ta-blue);"><?= htmlspecialchars($q['kode_qr']) ?></strong>
-                                        &bull; <?= htmlspecialchars($q['merek']) ?>
-                                    </div>
+        <?php if (count($restockTop5) === 0): ?>
+            <div class="px-3 py-3 rounded-3 d-flex align-items-center gap-2" style="background: #ECFDF5; color: var(--ta-green); font-size: 0.83rem;">
+                <i class="bi bi-check-circle-fill"></i>
+                <span>Seluruh material gudang berada di atas batas minimum restock.</span>
+            </div>
+        <?php else: ?>
+            <div class="d-flex flex-column gap-2">
+                <?php foreach ($restockTop5 as $r): ?>
+                    <div class="restock-row flex-wrap">
+                        <div class="d-flex align-items-center gap-3 min-w-0">
+                            <?php
+                            $rImgPath = !empty($r['gambar']) ? ltrim($r['gambar'], '/') : '';
+                            if ($rImgPath !== '' && file_exists(__DIR__ . '/' . $rImgPath)):
+                            ?>
+                                <img src="/<?= htmlspecialchars($rImgPath) ?>" alt="<?= htmlspecialchars($r['nama_material']) ?>" style="width: 46px; height: 46px; object-fit: cover; border-radius: 10px; border: 1px solid #E2E8F0; flex-shrink: 0;">
+                            <?php else: ?>
+                                <div class="prod-thumb" style="width: 46px; height: 46px; font-size: 1rem; background: rgba(240, 246, 253, 0.9); color: var(--ta-navy); border-color: rgba(243, 130, 24, 0.35);">
+                                    <i class="bi bi-box-seam"></i>
+                                </div>
+                            <?php endif; ?>
+                            <div class="min-w-0">
+                                <div class="col-main-val" style="color: var(--ta-navy);"><?= htmlspecialchars($r['nama_material']) ?></div>
+                                <div class="col-micro-lbl mb-0">
+                                    <strong style="color: var(--ta-blue);"><?= htmlspecialchars($r['id_material']) ?></strong>
+                                    &bull; <?= htmlspecialchars($r['kategori']) ?>
+                                    <?= !empty($r['merek']) ? ' &bull; ' . htmlspecialchars($r['merek']) : '' ?>
                                 </div>
                             </div>
-                        </td>
-                        <td>
-                            <div class="col-micro-lbl">Capacity <span class="fw-semibold" style="color: <?= $arcColor ?>;"><?= $labelKondisi ?></span></div>
-                            <div style="font-size: 0.78rem; color: var(--text-muted);">
-                                <i class="bi bi-geo-alt me-1"></i><?= htmlspecialchars($q['section_gudang']) ?>
+                        </div>
+
+                        <div class="d-flex align-items-center gap-3 ms-auto flex-wrap">
+                            <div class="text-end">
+                                <div class="col-micro-lbl mb-0">Stok / Batas Min</div>
+                                <div class="col-main-val" style="font-size: 0.82rem;">
+                                    <span class="text-danger"><?= (int)$r['total_stok'] ?></span>
+                                    <span class="text-muted fw-normal">/ <?= (int)$r['batas_minimum'] . ' ' . htmlspecialchars($r['satuan']) ?></span>
+                                </div>
                             </div>
-                        </td>
-                        <td style="width: 90px;" class="text-center">
-                            <?= renderQrArc($persen, $arcColor) ?>
-                        </td>
-                        <td>
-                            <div class="col-micro-lbl">Remaining</div>
-                            <div class="col-main-val"><?= $q['qty_sisa'] ?> <span class="fw-normal text-muted">/ <?= $q['qty_awal'] . ' ' . htmlspecialchars($q['satuan']) ?></span></div>
-                        </td>
-                        <td>
-                            <div class="col-micro-lbl">Status</div>
-                            <span class="saas-switch <?= $q['qty_sisa'] > 0 ? 'on' : '' ?>"></span>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
-        </div>
+                            <span class="badge-pill-red py-1 px-2">
+                                Kurang <?= (int)$r['jumlah_harus_restock'] . ' ' . htmlspecialchars($r['satuan']) ?>
+                            </span>
+                            <a href="/barang/edit.php?id=<?= urlencode($r['id_material']) ?>" class="btn-toolbar-primary" style="font-size: 0.76rem; padding: 0.34rem 0.75rem;">
+                                <i class="bi bi-arrow-repeat"></i> Update Stok
+                            </a>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
     </div>
 </main>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+(function () {
+    Chart.defaults.font.family = "'Inter', -apple-system, BlinkMacSystemFont, sans-serif";
+    Chart.defaults.color = '#6B7280';
+
+    const commonTooltip = {
+        backgroundColor: '#062A4E',
+        titleColor: '#FFFFFF',
+        bodyColor: '#F3F4F6',
+        padding: 10,
+        cornerRadius: 8,
+        displayColors: true,
+    };
+
+    // CHART 1: Kesehatan Stok Material (Doughnut Chart)
+    const ctxStock = document.getElementById('chartStockHealth');
+    if (ctxStock) {
+        new Chart(ctxStock, {
+            type: 'doughnut',
+            data: {
+                labels: ['Stok Aman', 'Low Stock (Kritis)'],
+                datasets: [{
+                    data: [<?= (int)$safeStockCount ?>, <?= (int)$lowStockCount ?>],
+                    backgroundColor: ['#135E38', '#F38218'],
+                    hoverBackgroundColor: ['#0D559B', '#DC2626'],
+                    borderWidth: 3,
+                    borderColor: '#FFFFFF',
+                    hoverOffset: 6,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                cutout: '70%',
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: { usePointStyle: true, pointStyle: 'circle', padding: 16, font: { size: 12, weight: '500' } }
+                    },
+                    tooltip: {
+                        ...commonTooltip,
+                        callbacks: {
+                            label: function (ctx) {
+                                const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
+                                const pct = total > 0 ? Math.round((ctx.parsed / total) * 100) : 0;
+                                return ` ${ctx.label}: ${ctx.parsed} material (${pct}%)`;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // CHART 2: Distribusi Kategori Material (Horizontal Bar Chart)
+    const katLabels = <?= json_encode($katLabels, JSON_UNESCAPED_UNICODE) ?>;
+    const katCounts = <?= json_encode($katCounts) ?>;
+    const katUnits  = <?= json_encode($katUnits) ?>;
+    const katPalette = ['#062A4E', '#0D559B', '#F38218', '#135E38', '#617275'];
+    const ctxCat = document.getElementById('chartCategoryDist');
+    if (ctxCat) {
+        new Chart(ctxCat, {
+            type: 'bar',
+            data: {
+                labels: katLabels,
+                datasets: [{
+                    label: 'Jumlah Item',
+                    data: katCounts,
+                    backgroundColor: katLabels.map((_, i) => katPalette[i % katPalette.length]),
+                    borderRadius: 8,
+                    barThickness: 24,
+                }]
+            },
+            options: {
+                indexAxis: 'y',
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        ...commonTooltip,
+                        callbacks: {
+                            label: function (ctx) {
+                                const unit = katUnits[ctx.dataIndex] ?? 0;
+                                return ` ${ctx.parsed.x} jenis material (${unit.toLocaleString('id-ID')} total unit)`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        beginAtZero: true,
+                        ticks: { stepSize: 1, precision: 0, font: { size: 11 } },
+                        grid: { color: '#F1F5F9' },
+                        border: { display: false }
+                    },
+                    y: {
+                        ticks: { font: { size: 12, weight: '500' }, color: '#111827' },
+                        grid: { display: false },
+                        border: { display: false }
+                    }
+                }
+            }
+        });
+    }
+
+    // CHART 3: Sales Pipeline & Leads (Vertical Bar Chart — Construct Orange)
+    const ctxPipeline = document.getElementById('chartSalesPipeline');
+    if (ctxPipeline) {
+        new Chart(ctxPipeline, {
+            type: 'bar',
+            data: {
+                labels: <?= json_encode($funnelStages) ?>,
+                datasets: [{
+                    label: 'Jumlah Prospek',
+                    data: <?= json_encode($funnelCounts) ?>,
+                    backgroundColor: [
+                        'rgba(243, 130, 24, 0.55)',
+                        'rgba(243, 130, 24, 0.72)',
+                        'rgba(243, 130, 24, 0.88)',
+                        '#F38218'
+                    ],
+                    hoverBackgroundColor: '#062A4E',
+                    borderRadius: 8,
+                    maxBarThickness: 46,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        ...commonTooltip,
+                        callbacks: {
+                            label: function (ctx) {
+                                return ` ${ctx.parsed.y} prospek pada tahap ${ctx.label}`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: { stepSize: 1, precision: 0, font: { size: 11 } },
+                        grid: { color: '#F1F5F9' },
+                        border: { display: false }
+                    },
+                    x: {
+                        ticks: { font: { size: 12, weight: '500' }, color: '#111827' },
+                        grid: { display: false },
+                        border: { display: false }
+                    }
+                }
+            }
+        });
+    }
+
+    // CHART 4: Win/Loss Ratio (Pie Chart)
+    const ctxWinLoss = document.getElementById('chartWinLoss');
+    if (ctxWinLoss) {
+        new Chart(ctxWinLoss, {
+            type: 'pie',
+            data: {
+                labels: ['Proyek Win', 'Proyek Loss'],
+                datasets: [{
+                    data: [<?= (int)$pieWin ?>, <?= (int)$pieLoss ?>],
+                    backgroundColor: ['#135E38', '#EF4444'],
+                    hoverBackgroundColor: ['#0D559B', '#DC2626'],
+                    borderWidth: 3,
+                    borderColor: '#FFFFFF',
+                    hoverOffset: 6,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: { usePointStyle: true, pointStyle: 'circle', padding: 16, font: { size: 12, weight: '500' } }
+                    },
+                    tooltip: {
+                        ...commonTooltip,
+                        callbacks: {
+                            label: function (ctx) {
+                                const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
+                                const pct = total > 0 ? Math.round((ctx.parsed / total) * 100) : 0;
+                                return ` ${ctx.label}: ${ctx.parsed} proyek (${pct}%)`;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+})();
+</script>
 
 <?php include __DIR__ . '/layout/footer.php'; ?>

@@ -1,4 +1,6 @@
 <?php
+require_once __DIR__ . '/../config/auth.php';
+requireAuth();
 require_once __DIR__ . '/../config/db.php';
 include __DIR__ . '/../layout/header.php';
 
@@ -188,9 +190,16 @@ SVG;
                             <!-- Kolom 1: Thumbnail + Nama Material + Kode & Merek -->
                             <td style="min-width: 240px;">
                                 <div class="d-flex align-items-center gap-3">
-                                    <div class="prod-thumb">
-                                        <i class="bi bi-box-seam"></i>
-                                    </div>
+                                    <?php
+                                    $matImgPath = !empty($m['gambar']) ? ltrim($m['gambar'], '/') : '';
+                                    if ($matImgPath !== '' && file_exists(__DIR__ . '/../' . $matImgPath)):
+                                    ?>
+                                        <img src="/<?= htmlspecialchars($matImgPath) ?>" alt="<?= htmlspecialchars($m['nama_material']) ?>" style="width: 46px; height: 46px; object-fit: cover; border-radius: 10px; border: 1px solid #E2E8F0; flex-shrink: 0;">
+                                    <?php else: ?>
+                                        <div class="prod-thumb">
+                                            <i class="bi bi-box-seam"></i>
+                                        </div>
+                                    <?php endif; ?>
                                     <div>
                                         <div class="col-main-val" style="color: var(--ta-navy);"><?= htmlspecialchars($m['nama_material']) ?></div>
                                         <div class="col-micro-lbl mb-0">
@@ -237,12 +246,27 @@ SVG;
                                 <span class="saas-switch <?= $m['total_stok'] > 0 ? 'on' : '' ?>" title="<?= $m['total_stok'] > 0 ? 'Tersedia di Gudang' : 'Stok Kosong' ?>"></span>
                             </td>
 
-                            <!-- Kolom 7: Aksi (Edit, Detail, Delete - Persis ikon pensil, mata, titik tiga di kanan) -->
+                            <!-- Kolom 7: QR Code -->
+                            <td style="width: 95px;" class="text-center">
+                                <div class="col-micro-lbl">QR Code</div>
+                                <button type="button"
+                                        class="btn-qr-trigger"
+                                        data-qr-id="<?= htmlspecialchars($m['id_material']) ?>"
+                                        data-qr-name="<?= htmlspecialchars($m['nama_material']) ?>"
+                                        data-qr-cat="<?= htmlspecialchars($m['kategori']) ?>"
+                                        data-qr-merek="<?= htmlspecialchars($m['merek'] ?? 'Standard') ?>"
+                                        data-qr-satuan="<?= htmlspecialchars($m['satuan']) ?>"
+                                        title="Generate &amp; Download QR <?= htmlspecialchars($m['id_material']) ?>">
+                                    <i class="bi bi-qr-code"></i>
+                                </button>
+                            </td>
+
+                            <!-- Kolom 8: Aksi (Edit, Detail, Delete - Persis ikon pensil, mata, titik tiga di kanan) -->
                             <td class="text-end" style="width: 115px;">
                                 <a href="/barang/edit.php?id=<?= urlencode($m['id_material']) ?>" class="row-act-icon" title="Edit Material">
                                     <i class="bi bi-pencil"></i>
                                 </a>
-                                <a href="/index.php#rak-qr" class="row-act-icon" title="Lihat Kemasan QR">
+                                <a href="/transaksi_qr/index.php" class="row-act-icon" title="Scan &amp; Transaksi QR">
                                     <i class="bi bi-eye"></i>
                                 </a>
                                 <a href="/barang/delete.php?id=<?= urlencode($m['id_material']) ?>"
@@ -277,5 +301,183 @@ SVG;
         <?php endif; ?>
     </div>
 </main>
+
+<style>
+    .btn-qr-trigger {
+        width: 34px;
+        height: 34px;
+        border-radius: 9px;
+        border: 1px solid rgba(13, 85, 155, 0.2);
+        background: rgba(228, 238, 249, 0.72);
+        color: var(--ta-navy);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.98rem;
+        cursor: pointer;
+        transition: all 0.15s ease;
+    }
+    .btn-qr-trigger:hover {
+        background: var(--ta-navy);
+        border-color: var(--ta-navy);
+        color: #FFFFFF;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 10px rgba(6, 42, 78, 0.16);
+    }
+    .qr-modal-content {
+        border-radius: 22px;
+        overflow: hidden;
+    }
+    .qr-label-frame {
+        background: linear-gradient(145deg, rgba(244, 248, 254, 0.95) 0%, rgba(254, 248, 242, 0.95) 100%);
+        border: 1.5px dashed rgba(13, 85, 155, 0.3);
+        border-radius: 16px;
+        padding: 1.35rem;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+    }
+    .qr-canvas-pad {
+        padding: 10px;
+        border-radius: 10px;
+        background: #FFFFFF;
+        border: 1px solid rgba(13, 85, 155, 0.12);
+    }
+    #qrCodeCanvas img,
+    #qrCodeCanvas canvas {
+        display: block;
+        border-radius: 6px;
+    }
+</style>
+
+<!-- Modal Generate & Download/Print QR Code Material -->
+<div class="modal fade" id="qrPrintModal" tabindex="-1" aria-labelledby="qrPrintModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered" style="max-width: 410px;">
+        <div class="modal-content qr-modal-content">
+            <div class="px-4 pt-4 pb-2 d-flex align-items-start justify-content-between gap-2">
+                <div>
+                    <span class="badge-pill-soft mb-1 d-inline-block" style="background: #EFF6FF; color: var(--ta-blue);">Label QR Gudang</span>
+                    <h5 class="mb-0 fw-bold" id="qrPrintModalLabel" style="color: var(--ta-navy); font-size: 1.05rem;">QR Code Material</h5>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
+            </div>
+            <div class="modal-body px-4 pt-2 pb-4">
+                <div class="qr-label-frame mb-3">
+                    <div id="qrCodeCanvas" class="qr-canvas-pad"></div>
+                    <div class="mt-3 text-center">
+                        <div id="qrModalId" class="fw-bold" style="color: var(--ta-navy); font-size: 1rem; letter-spacing: 0.04em;">MAT-001</div>
+                        <div id="qrModalName" class="fw-semibold mt-1" style="color: var(--text-dark); font-size: 0.86rem;">Nama Material</div>
+                        <div id="qrModalMeta" class="col-micro-lbl mb-0 mt-1">Kategori &bull; Merek</div>
+                    </div>
+                </div>
+
+                <div class="d-grid gap-2">
+                    <button type="button" id="btnDownloadQr" class="btn-toolbar-primary justify-content-center py-2" style="border-radius: 12px;">
+                        <i class="bi bi-download"></i> Download QR (PNG)
+                    </button>
+                    <button type="button" id="btnPrintQr" class="btn-toolbar-orange justify-content-center py-2" style="border-radius: 12px;">
+                        <i class="bi bi-printer"></i> Print Label QR
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+window.addEventListener('DOMContentLoaded', function () {
+    const modalEl   = document.getElementById('qrPrintModal');
+    const qrTarget  = document.getElementById('qrCodeCanvas');
+    const elId      = document.getElementById('qrModalId');
+    const elName    = document.getElementById('qrModalName');
+    const elMeta    = document.getElementById('qrModalMeta');
+    const btnDl     = document.getElementById('btnDownloadQr');
+    const btnPrint  = document.getElementById('btnPrintQr');
+
+    if (!modalEl || !qrTarget || typeof bootstrap === 'undefined') return;
+
+    const qrModal = new bootstrap.Modal(modalEl);
+    let currentQrData = { id: '', name: '', meta: '' };
+
+    document.querySelectorAll('.btn-qr-trigger').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            const id     = btn.getAttribute('data-qr-id') || '';
+            const name   = btn.getAttribute('data-qr-name') || '';
+            const cat    = btn.getAttribute('data-qr-cat') || '';
+            const merek  = btn.getAttribute('data-qr-merek') || '';
+            const satuan = btn.getAttribute('data-qr-satuan') || '';
+
+            currentQrData = { id, name, meta: `${cat} • ${merek} (${satuan})` };
+            elId.textContent   = id;
+            elName.textContent = name;
+            elMeta.textContent = currentQrData.meta;
+
+            qrTarget.innerHTML = '';
+            if (typeof QRCode !== 'undefined') {
+                new QRCode(qrTarget, {
+                    text: id,
+                    width: 210,
+                    height: 210,
+                    colorDark: '#000000',
+                    colorLight: '#FFFFFF',
+                    correctLevel: QRCode.CorrectLevel.H
+                });
+            }
+            qrModal.show();
+        });
+    });
+
+    function getQrDataUrl() {
+        const canvas = qrTarget.querySelector('canvas');
+        if (canvas) return canvas.toDataURL('image/png');
+        const img = qrTarget.querySelector('img');
+        if (img && img.src) return img.src;
+        return null;
+    }
+
+    if (btnDl) {
+        btnDl.addEventListener('click', function () {
+            const dataUrl = getQrDataUrl();
+            if (!dataUrl) return;
+            const link = document.createElement('a');
+            link.href = dataUrl;
+            link.download = `QR-${currentQrData.id || 'material'}.png`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        });
+    }
+
+    if (btnPrint) {
+        btnPrint.addEventListener('click', function () {
+            const dataUrl = getQrDataUrl();
+            if (!dataUrl) return;
+            const win = window.open('', '_blank', 'width=440,height=540');
+            if (!win) return;
+            win.document.write(`<!DOCTYPE html><html><head><title>Print QR ${currentQrData.id}</title>
+                <style>
+                    body { font-family: Inter, -apple-system, sans-serif; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; background:#fff; }
+                    .label { border:1.5px solid #111; border-radius:14px; padding:24px; text-align:center; width:280px; }
+                    .label img { width:200px; height:200px; display:block; margin:0 auto 14px; }
+                    .sku { font-size:18px; font-weight:800; color:#062A4E; letter-spacing:0.05em; }
+                    .name { font-size:14px; font-weight:600; color:#111827; margin-top:4px; }
+                    .meta { font-size:11px; color:#6B7280; margin-top:4px; }
+                    .brand { font-size:10px; font-weight:700; color:#F38218; margin-top:12px; letter-spacing:0.08em; text-transform:uppercase; }
+                </style></head><body>
+                <div class="label">
+                    <img src="${dataUrl}" alt="${currentQrData.id}">
+                    <div class="sku">${currentQrData.id}</div>
+                    <div class="name">${currentQrData.name}</div>
+                    <div class="meta">${currentQrData.meta}</div>
+                    <div class="brand">PT Tri Arta Konstruksi</div>
+                </div>
+                <script>window.onload = function(){ window.print(); };<\/script>
+                </body></html>`);
+            win.document.close();
+        });
+    }
+});
+</script>
 
 <?php include __DIR__ . '/../layout/footer.php'; ?>
