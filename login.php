@@ -64,6 +64,7 @@ if (file_exists(__DIR__ . '/assets/logo-tri-arta.png')) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login — PT Tri Arta Konstruksi</title>
+    <link rel="icon" type="image/png" href="/favicon.png">
     <link href="/assets/vendor/bootstrap.min.css" rel="stylesheet">
     <link href="/assets/vendor/bootstrap-icons.min.css" rel="stylesheet">
     <style>

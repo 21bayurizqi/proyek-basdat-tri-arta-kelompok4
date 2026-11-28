@@ -1250,7 +1250,7 @@ window.addEventListener('DOMContentLoaded', function () {
             if (!dataUrl) return;
             const win = window.open('', '_blank', 'width=440,height=540');
             if (!win) return;
-            win.document.write(`<!DOCTYPE html><html><head><title>Print QR ${currentQrData.id}</title>
+            win.document.write(`<!DOCTYPE html><html><head><title>Print QR ${currentQrData.id}</title><link rel="icon" type="image/png" href="/favicon.png">
                 <style>
                     body { font-family: Inter, -apple-system, sans-serif; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; background:#fff; }
                     .label { border:1.5px solid #111; border-radius:14px; padding:24px; text-align:center; width:280px; }
