@@ -64,11 +64,8 @@ if (file_exists(__DIR__ . '/assets/logo-tri-arta.png')) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login — PT Tri Arta Konstruksi</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="/assets/vendor/bootstrap.min.css" rel="stylesheet">
+    <link href="/assets/vendor/bootstrap-icons.min.css" rel="stylesheet">
     <style>
         :root {
             --ta-navy: #062A4E;
@@ -109,13 +106,13 @@ if (file_exists(__DIR__ . '/assets/logo-tri-arta.png')) {
         }
         .login-wrap {
             width: 100%;
-            max-width: 420px;
+            max-width: 450px;
             position: relative;
             z-index: 1;
         }
         .login-card {
             background: #FFFFFF;
-            border-radius: 20px;
+            border-radius: 22px;
             box-shadow: 0 24px 64px rgba(3, 19, 38, 0.42), 0 4px 16px rgba(6, 42, 78, 0.14);
             overflow: hidden;
             border: 1px solid rgba(255, 255, 255, 0.65);
@@ -125,18 +122,18 @@ if (file_exists(__DIR__ . '/assets/logo-tri-arta.png')) {
             background: linear-gradient(90deg, var(--ta-navy) 0%, var(--ta-blue) 55%, var(--ta-orange) 100%);
         }
         .login-body {
-            padding: 2.25rem 2rem 2rem;
+            padding: 44px 40px;
         }
         .brand-logo-wrap {
             display: flex;
             justify-content: center;
             align-items: center;
-            margin-bottom: 1.75rem;
+            margin-bottom: 32px;
         }
         .brand-logo-img {
-            height: 76px;
+            height: 80px;
             width: auto;
-            max-width: 240px;
+            max-width: 260px;
             object-fit: contain;
         }
         .brand-fallback-badge {
@@ -155,11 +152,14 @@ if (file_exists(__DIR__ . '/assets/logo-tri-arta.png')) {
             border-bottom: 3px solid var(--ta-orange);
         }
         .brand-fallback-badge span { color: var(--ta-orange); }
+        .field-group-user {
+            margin-bottom: 22px;
+        }
         .field-label {
-            font-size: 0.79rem;
+            font-size: 0.86rem;
             font-weight: 600;
             color: var(--ta-navy);
-            margin-bottom: 0.4rem;
+            margin-bottom: 8px;
             display: block;
         }
         .input-shell {
@@ -167,21 +167,23 @@ if (file_exists(__DIR__ . '/assets/logo-tri-arta.png')) {
         }
         .input-shell .field-icon {
             position: absolute;
-            left: 0.9rem;
+            left: 16px;
             top: 50%;
             transform: translateY(-50%);
             color: #9CA3AF;
-            font-size: 0.95rem;
+            font-size: 1rem;
             pointer-events: none;
             transition: color 0.15s;
         }
         .modern-input {
             width: 100%;
-            padding: 0.72rem 2.65rem 0.72rem 2.55rem;
+            padding: 13px 16px;
+            padding-left: 44px;
+            padding-right: 44px;
             border-radius: 12px;
             border: 1.5px solid var(--border-color);
             background: #F9FAFB;
-            font-size: 0.87rem;
+            font-size: 0.94rem;
             color: var(--text-dark);
             transition: all 0.15s ease;
         }
@@ -196,13 +198,13 @@ if (file_exists(__DIR__ . '/assets/logo-tri-arta.png')) {
         }
         .toggle-pw-btn {
             position: absolute;
-            right: 0.65rem;
+            right: 12px;
             top: 50%;
             transform: translateY(-50%);
             border: none;
             background: transparent;
             color: #9CA3AF;
-            padding: 0.25rem 0.35rem;
+            padding: 5px 7px;
             border-radius: 8px;
             cursor: pointer;
             line-height: 1;
@@ -214,13 +216,14 @@ if (file_exists(__DIR__ . '/assets/logo-tri-arta.png')) {
         }
         .btn-login-cta {
             width: 100%;
+            margin-top: 30px;
             border: none;
             border-radius: 999px;
-            padding: 0.78rem 1.25rem;
+            padding: 14px 20px;
             background: var(--ta-navy);
             border-bottom: 3px solid var(--ta-orange);
             color: #FFFFFF;
-            font-size: 0.9rem;
+            font-size: 15.5px;
             font-weight: 600;
             letter-spacing: 0.01em;
             display: inline-flex;
@@ -241,16 +244,19 @@ if (file_exists(__DIR__ . '/assets/logo-tri-arta.png')) {
         }
         .login-footer {
             text-align: center;
-            margin-top: 1.15rem;
-            font-size: 0.74rem;
-            color: rgba(255, 255, 255, 0.76);
+            margin-top: 22px;
+            font-size: 0.8rem;
+            color: rgba(255, 255, 255, 0.78);
         }
         .login-footer strong { color: #FFFFFF; font-weight: 600; }
         .alert-compact {
-            font-size: 0.8rem;
-            border-radius: 10px;
-            padding: 0.62rem 0.85rem;
-            margin-bottom: 1.1rem;
+            font-size: 0.85rem;
+            border-radius: 11px;
+            padding: 0.7rem 0.95rem;
+            margin-bottom: 22px;
+        }
+        @media (max-width: 480px) {
+            .login-body { padding: 34px 24px; }
         }
     </style>
 </head>
@@ -277,7 +283,7 @@ if (file_exists(__DIR__ . '/assets/logo-tri-arta.png')) {
                 <form method="POST" autocomplete="on">
                     <input type="hidden" name="next" value="<?= htmlspecialchars($next) ?>">
 
-                    <div class="mb-3">
+                    <div class="field-group-user">
                         <label for="username" class="field-label">Username</label>
                         <div class="input-shell">
                             <i class="bi bi-person field-icon"></i>
@@ -295,7 +301,7 @@ if (file_exists(__DIR__ . '/assets/logo-tri-arta.png')) {
                         </div>
                     </div>
 
-                    <div class="mb-4">
+                    <div>
                         <label for="password" class="field-label">Password</label>
                         <div class="input-shell">
                             <i class="bi bi-lock field-icon"></i>

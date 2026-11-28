@@ -2,16 +2,148 @@
 require_once __DIR__ . '/../config/auth.php';
 requireAuth();
 require_once __DIR__ . '/../config/db.php';
+require_once __DIR__ . '/../config/qr_helper.php';
+
+// Sinkronisasi otomatis material berstok > 0 yang belum memiliki entri kemasan_qr
+syncMissingKemasanQr($pdo);
+
+$isApprover = isApproverAdmin();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['aksi_approval'], $_POST['id_keluar'])) {
-    $idKeluar   = $_POST['id_keluar'];
-    $statusBaru = $_POST['aksi_approval'] === 'approve' ? 'Approved' : 'Rejected';
-    $validator  = $_SESSION['id_staf'] ?? ($_POST['id_validator'] ?? 'STF-001');
+    if (!$isApprover) {
+        header('Location: /transaksi_qr/index.php?err=' . urlencode('Akses ditolak: hanya Bapak Ismail Sahid atau Bapak Taufan Kusuma Negara yang berwenang menyetujui / menolak transaksi.'));
+        exit;
+    }
 
-    $upd = $pdo->prepare("UPDATE barang_keluar SET status_approval = :st, id_staf_validator = :val WHERE id_keluar = :id");
-    $upd->execute([':st' => $statusBaru, ':val' => $validator, ':id' => $idKeluar]);
-    header('Location: /transaksi_qr/index.php?msg=' . urlencode("Status transaksi $idKeluar diubah menjadi $statusBaru."));
-    exit;
+    $idKeluar = trim($_POST['id_keluar']);
+    $aksi     = $_POST['aksi_approval'];
+    $validator = $_SESSION['id_staf'] ?? '';
+
+    if ($idKeluar === '' || !in_array($aksi, ['approve', 'reject'], true) || !isApproverStaffId($validator)) {
+        header('Location: /transaksi_qr/index.php?err=' . urlencode('Permintaan validasi approval tidak valid.'));
+        exit;
+    }
+
+    try {
+        $pdo->beginTransaction();
+
+        // Kunci header barang_keluar agar tidak bisa di-approve dua kali (anti double-deduction)
+        $stmtLock = $pdo->prepare("
+            SELECT id_keluar, status_approval
+            FROM barang_keluar
+            WHERE id_keluar = :id
+            FOR UPDATE
+        ");
+        $stmtLock->execute([':id' => $idKeluar]);
+        $bkRow = $stmtLock->fetch();
+
+        if (!$bkRow) {
+            $pdo->rollBack();
+            header('Location: /transaksi_qr/index.php?err=' . urlencode("Transaksi $idKeluar tidak ditemukan."));
+            exit;
+        }
+
+        if ($bkRow['status_approval'] !== 'Pending Approval') {
+            $pdo->rollBack();
+            header('Location: /transaksi_qr/index.php?err=' . urlencode("Transaksi $idKeluar sudah divalidasi sebelumnya ({$bkRow['status_approval']})."));
+            exit;
+        }
+
+        if ($aksi === 'approve') {
+            $stmtDetails = $pdo->prepare("
+                SELECT id_detail_keluar, kode_qr, qty_keluar
+                FROM detail_keluar
+                WHERE id_keluar = :id
+                ORDER BY id_detail_keluar ASC
+            ");
+            $stmtDetails->execute([':id' => $idKeluar]);
+            $details = $stmtDetails->fetchAll();
+
+            $stmtCheckQr = $pdo->prepare("
+                SELECT k.kode_qr, k.qty_sisa, k.id_material, m.nama_material, m.total_stok, m.satuan
+                FROM kemasan_qr k
+                JOIN material m ON k.id_material = m.id_material
+                WHERE k.kode_qr = :qr
+                FOR UPDATE
+            ");
+            $stmtUpdQr = $pdo->prepare("
+                UPDATE kemasan_qr
+                SET qty_sisa = :sisa,
+                    status_kemasan = :status
+                WHERE kode_qr = :qr
+            ");
+            $stmtUpdMat = $pdo->prepare("
+                UPDATE material
+                SET total_stok = total_stok - :qty
+                WHERE id_material = :id_mat
+            ");
+
+            foreach ($details as $d) {
+                $qty = (int)$d['qty_keluar'];
+                $stmtCheckQr->execute([':qr' => $d['kode_qr']]);
+                $qrRow = $stmtCheckQr->fetch();
+
+                if (!$qrRow) {
+                    $pdo->rollBack();
+                    header('Location: /transaksi_qr/index.php?err=' . urlencode("Approval gagal: kemasan QR {$d['kode_qr']} tidak ditemukan."));
+                    exit;
+                }
+                if ($qty > (int)$qrRow['qty_sisa']) {
+                    $pdo->rollBack();
+                    header('Location: /transaksi_qr/index.php?err=' . urlencode("Approval gagal: sisa kemasan {$d['kode_qr']} ({$qrRow['qty_sisa']} {$qrRow['satuan']}) tidak mencukupi untuk {$qty} {$qrRow['satuan']}."));
+                    exit;
+                }
+                if ($qty > (int)$qrRow['total_stok']) {
+                    $pdo->rollBack();
+                    header('Location: /transaksi_qr/index.php?err=' . urlencode("Approval gagal: total stok {$qrRow['nama_material']} ({$qrRow['total_stok']} {$qrRow['satuan']}) tidak mencukupi."));
+                    exit;
+                }
+
+                $sisaBaru      = (int)$qrRow['qty_sisa'] - $qty;
+                $statusKemasan = $sisaBaru <= 0 ? 'Habis' : 'Sebagian Terpakai';
+
+                $stmtUpdQr->execute([
+                    ':sisa'   => $sisaBaru,
+                    ':status' => $statusKemasan,
+                    ':qr'     => $d['kode_qr'],
+                ]);
+                $stmtUpdMat->execute([
+                    ':qty'    => $qty,
+                    ':id_mat' => $qrRow['id_material'],
+                ]);
+            }
+
+            $upd = $pdo->prepare("
+                UPDATE barang_keluar
+                SET status_approval = 'Approved',
+                    id_staf_validator = :val
+                WHERE id_keluar = :id
+            ");
+            $upd->execute([':val' => $validator, ':id' => $idKeluar]);
+            $pdo->commit();
+
+            header('Location: /transaksi_qr/index.php?msg=' . urlencode("Transaksi $idKeluar disetujui (Approved) & stok gudang telah diperbarui."));
+            exit;
+        } else {
+            $upd = $pdo->prepare("
+                UPDATE barang_keluar
+                SET status_approval = 'Rejected',
+                    id_staf_validator = :val
+                WHERE id_keluar = :id
+            ");
+            $upd->execute([':val' => $validator, ':id' => $idKeluar]);
+            $pdo->commit();
+
+            header('Location: /transaksi_qr/index.php?msg=' . urlencode("Transaksi $idKeluar ditolak (Rejected). Stok gudang tidak berubah."));
+            exit;
+        }
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        header('Location: /transaksi_qr/index.php?err=' . urlencode('Gagal memproses validasi approval: ' . $e->getMessage()));
+        exit;
+    }
 }
 
 include __DIR__ . '/../layout/header.php';
@@ -19,7 +151,7 @@ include __DIR__ . '/../layout/header.php';
 // Katalog Material + Lokasi Rak QR dari PostgreSQL untuk lookup cepat hasil scan
 $catalogRows = $pdo->query("
     SELECT m.id_material, m.nama_material, m.kategori, m.merek, m.spesifikasi_teknis,
-           m.total_stok, m.batas_minimum, m.satuan, m.gambar,
+           m.total_stok, m.batas_minimum, m.satuan, m.gambar, m.foto_data,
            (
                SELECT k.section_gudang
                FROM kemasan_qr k
@@ -42,18 +174,14 @@ $catalogRows = $pdo->query("
 $qrBatchRows = $pdo->query("
     SELECT k.kode_qr, k.section_gudang, k.qty_sisa, k.status_kemasan,
            m.id_material, m.nama_material, m.kategori, m.merek, m.spesifikasi_teknis,
-           m.total_stok, m.batas_minimum, m.satuan, m.gambar
+           m.total_stok, m.batas_minimum, m.satuan, m.gambar, m.foto_data
     FROM kemasan_qr k
     JOIN material m ON k.id_material = m.id_material
     ORDER BY k.kode_qr ASC
 ")->fetchAll();
 
-$resolveMaterialImage = function (?string $rawPath): string {
-    $clean = !empty($rawPath) ? ltrim($rawPath, '/') : '';
-    if ($clean !== '' && file_exists(__DIR__ . '/../' . $clean)) {
-        return '/' . $clean;
-    }
-    return '';
+$resolveMaterialImage = function (?string $rawPath, ?string $fotoData = null): string {
+    return resolveMaterialImageSrc($rawPath, $fotoData, __DIR__ . '/..');
 };
 
 $scanLookup = [];
@@ -70,7 +198,7 @@ foreach ($catalogRows as $c) {
         'satuan'             => $c['satuan'],
         'lokasi_rak'         => $c['lokasi_rak'] ?: 'Gudang Utama',
         'kode_qr'            => $c['kode_qr_aktif'] ?: '',
-        'gambar'             => $resolveMaterialImage($c['gambar'] ?? null),
+        'gambar'             => $resolveMaterialImage($c['gambar'] ?? null, $c['foto_data'] ?? null),
     ];
 }
 foreach ($qrBatchRows as $qb) {
@@ -86,7 +214,7 @@ foreach ($qrBatchRows as $qb) {
         'satuan'             => $qb['satuan'],
         'lokasi_rak'         => $qb['section_gudang'] ?: 'Gudang Utama',
         'kode_qr'            => $qb['kode_qr'],
-        'gambar'             => $resolveMaterialImage($qb['gambar'] ?? null),
+        'gambar'             => $resolveMaterialImage($qb['gambar'] ?? null, $qb['foto_data'] ?? null),
     ];
 }
 
@@ -472,7 +600,7 @@ $placeholderLogo = file_exists(__DIR__ . '/../assets/logo-tri-arta.png')
 
 <header class="saas-topbar">
     <div>
-        <h1 class="saas-title">QR Scanner &amp; Transaksi Gudang</h1>
+        <h1 class="saas-title">Scan &amp; Barang Keluar</h1>
         <div class="text-muted" style="font-size: 14px;">Pindai label QR material melalui kamera atau gambar untuk cek stok cepat, update gudang, &amp; catat barang keluar</div>
     </div>
     <div class="d-flex align-items-center gap-2 flex-wrap">
@@ -488,7 +616,13 @@ $placeholderLogo = file_exists(__DIR__ . '/../assets/logo-tri-arta.png')
 <main class="p-4">
     <?php if (isset($_GET['msg'])): ?>
         <div class="alert alert-success alert-dismissible fade show py-2 mb-3" role="alert">
-            <?= htmlspecialchars($_GET['msg']) ?>
+            <span><?= htmlspecialchars($_GET['msg']) ?></span>
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+    <?php endif; ?>
+    <?php if (isset($_GET['err'])): ?>
+        <div class="alert alert-danger alert-dismissible fade show py-2 mb-3" role="alert">
+            <span><?= htmlspecialchars($_GET['err']) ?></span>
             <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
         </div>
     <?php endif; ?>
@@ -563,10 +697,10 @@ $placeholderLogo = file_exists(__DIR__ . '/../assets/logo-tri-arta.png')
                     </button>
                 </form>
 
-                <div class="d-flex flex-column gap-2 flex-grow-1">
-                    <?php foreach (array_slice($catalogRows, 0, 4) as $item):
+                <div class="d-flex flex-column gap-2 flex-grow-1" style="max-height: 265px; overflow-y: auto; padding-right: 4px;">
+                    <?php foreach (array_reverse($catalogRows) as $item):
                         $isLow = (int)$item['total_stok'] < (int)$item['batas_minimum'];
-                        $simImg = $resolveMaterialImage($item['gambar'] ?? null);
+                        $simImg = $resolveMaterialImage($item['gambar'] ?? null, $item['foto_data'] ?? null);
                     ?>
                         <button type="button" class="sim-chip-btn" data-sim-qr="<?= htmlspecialchars($item['id_material']) ?>">
                             <div class="d-flex align-items-center gap-2 min-w-0">
@@ -579,6 +713,9 @@ $placeholderLogo = file_exists(__DIR__ . '/../assets/logo-tri-arta.png')
                                     </div>
                                     <div class="col-micro-lbl mb-0">
                                         <strong style="color: var(--ta-blue);"><?= htmlspecialchars($item['id_material']) ?></strong>
+                                        <?php if (!empty($item['kode_qr_aktif'])): ?>
+                                            &bull; <span><?= htmlspecialchars($item['kode_qr_aktif']) ?></span>
+                                        <?php endif; ?>
                                         &bull; <?= htmlspecialchars($item['lokasi_rak'] ?: 'Gudang Utama') ?>
                                     </div>
                                 </div>
@@ -647,10 +784,9 @@ $placeholderLogo = file_exists(__DIR__ . '/../assets/logo-tri-arta.png')
                             <?php endif; ?>
                         </td>
                         <td class="text-end">
-                            <?php if ($isPending): ?>
+                            <?php if ($isPending && $isApprover): ?>
                                 <form method="POST" class="d-inline">
                                     <input type="hidden" name="id_keluar" value="<?= htmlspecialchars($t['id_keluar']) ?>">
-                                    <input type="hidden" name="id_validator" value="<?= htmlspecialchars($_SESSION['id_staf'] ?? 'STF-001') ?>">
                                     <button type="submit" name="aksi_approval" value="approve" class="btn btn-sm text-white" style="background: var(--ta-green); font-size: 13px;">
                                         <i class="bi bi-check-lg"></i> Approve
                                     </button>
@@ -658,6 +794,8 @@ $placeholderLogo = file_exists(__DIR__ . '/../assets/logo-tri-arta.png')
                                         Reject
                                     </button>
                                 </form>
+                            <?php elseif ($isPending): ?>
+                                <span class="badge-pill-soft" style="background: #FFF7ED; color: #F38218;">Menunggu Approval</span>
                             <?php else: ?>
                                 <span class="col-micro-lbl mb-0">Tervalidasi</span>
                             <?php endif; ?>
@@ -775,9 +913,11 @@ $placeholderLogo = file_exists(__DIR__ . '/../assets/logo-tri-arta.png')
 
             <!-- KELAS BAWAH: Full-Width Action Buttons -->
             <div class="scan-action-footer">
-                <a href="/barang/index.php" id="scanBtnUpdate" class="btn-scan-navy">
-                    <i class="bi bi-pencil-square"></i> Update Stok Gudang
-                </a>
+                <?php if ($isApprover): ?>
+                    <a href="/barang/index.php" id="scanBtnUpdate" class="btn-scan-navy">
+                        <i class="bi bi-pencil-square"></i> Update Stok Gudang
+                    </a>
+                <?php endif; ?>
                 <a href="/transaksi_qr/create.php" id="scanBtnOut" class="btn-scan-orange">
                     <i class="bi bi-box-arrow-up-right"></i> Catat Keluar
                 </a>
@@ -883,10 +1023,14 @@ window.addEventListener('DOMContentLoaded', function () {
                 elStockBdg.style.color = '#135E38';
             }
 
-            btnUpdate.href = '/barang/edit.php?id=' + encodeURIComponent(item.id_material);
-            btnOut.href    = item.kode_qr
-                ? '/transaksi_qr/create.php?kode_qr=' + encodeURIComponent(item.kode_qr)
-                : '/transaksi_qr/create.php';
+            if (btnUpdate) {
+                btnUpdate.href = '/barang/edit.php?id=' + encodeURIComponent(item.id_material);
+            }
+            if (btnOut) {
+                btnOut.href = item.kode_qr
+                    ? '/transaksi_qr/create.php?kode_qr=' + encodeURIComponent(item.kode_qr)
+                    : '/transaksi_qr/create.php';
+            }
         } else {
             if (elHeroPhoto && elHeroFallb && elHeroStage) {
                 elHeroPhoto.src = '';
@@ -911,8 +1055,8 @@ window.addEventListener('DOMContentLoaded', function () {
             elStockBdg.style.background = '#F1F5F9';
             elStockBdg.style.color = '#475569';
 
-            btnUpdate.href = '/barang/create.php';
-            btnOut.href    = '/transaksi_qr/create.php';
+            if (btnUpdate) btnUpdate.href = '/barang/create.php';
+            if (btnOut) btnOut.href = '/transaksi_qr/create.php';
         }
 
         resultModal.show();

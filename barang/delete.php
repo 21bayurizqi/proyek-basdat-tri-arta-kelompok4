@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../config/auth.php';
 requireAuth();
+requireApproverAdmin('/barang/index.php');
 require_once __DIR__ . '/../config/db.php';
 
 $id = $_GET['id'] ?? '';

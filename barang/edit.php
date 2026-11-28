@@ -1,7 +1,11 @@
 <?php
 require_once __DIR__ . '/../config/auth.php';
 requireAuth();
+requireApproverAdmin('/barang/index.php');
 require_once __DIR__ . '/../config/db.php';
+require_once __DIR__ . '/../config/app_helpers.php';
+
+ensureSchemaMigrationsOnce($pdo);
 
 $id = $_GET['id'] ?? '';
 $stmt = $pdo->prepare("SELECT * FROM material WHERE id_material = :id");
@@ -13,13 +17,12 @@ if (!$mat) {
     exit;
 }
 
-$defaultKats  = ['Irigasi', 'Perpipaan', 'Kontrol & Otomasi', 'Elektrikal'];
-$dbKats       = $pdo->query("SELECT DISTINCT kategori FROM material ORDER BY kategori ASC")->fetchAll(PDO::FETCH_COLUMN);
-$kategoriList = array_values(array_unique(array_merge($defaultKats, $dbKats, [$mat['kategori']])));
+$kategoriList = array_values(array_unique(array_merge(getKategoriMaterialNames($pdo), [$mat['kategori']])));
 sort($kategoriList);
 
-$existingGambar = !empty($mat['gambar']) ? ltrim($mat['gambar'], '/') : '';
-$hasExistingImg = $existingGambar !== '' && file_exists(__DIR__ . '/../' . $existingGambar);
+$existingGambar  = !empty($mat['gambar']) ? ltrim($mat['gambar'], '/') : '';
+$existingImgSrc  = resolveMaterialImageSrc($mat['gambar'] ?? null, $mat['foto_data'] ?? null, __DIR__ . '/..');
+$hasExistingImg  = ($existingImgSrc !== '');
 
 $error = '';
 $form = [
@@ -57,6 +60,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error = 'Total stok dan batas minimum tidak boleh bernilai negatif.';
     } else {
         $newGambarDbPath  = $mat['gambar'] ?? null;
+        $newFotoDataUri   = $mat['foto_data'] ?? null;
         $uploadedFilePath = null;
         $oldFileToRemove  = null;
 
@@ -76,19 +80,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $error = 'Format gambar tidak didukung. Gunakan file JPG, JPEG, PNG, atau WEBP.';
                 } else {
                     $uploadDir = __DIR__ . '/../assets/uploads/material';
-                    if (!is_dir($uploadDir)) {
-                        mkdir($uploadDir, 0775, true);
-                    }
-                    $fileName = strtolower($id) . '-' . time() . '-' . bin2hex(random_bytes(4)) . '.' . $ext;
-                    $destPath = $uploadDir . '/' . $fileName;
-
-                    if (!move_uploaded_file($_FILES['gambar']['tmp_name'], $destPath)) {
-                        $error = 'Gagal menyimpan file foto ke folder assets/uploads/material/.';
+                    if (!is_dir($uploadDir) && !@mkdir($uploadDir, 0775, true) && !is_dir($uploadDir)) {
+                        $error = 'Gagal membuat folder assets/uploads/material/. Periksa izin direktori / Persistent Volume.';
                     } else {
-                        $uploadedFilePath = $destPath;
-                        $newGambarDbPath  = 'assets/uploads/material/' . $fileName;
-                        if ($hasExistingImg && str_starts_with($existingGambar, 'assets/uploads/material/')) {
-                            $oldFileToRemove = __DIR__ . '/../assets/uploads/material/' . basename($existingGambar);
+                        if (!is_writable($uploadDir)) {
+                            @chmod($uploadDir, 0775);
+                        }
+                        if (!is_writable($uploadDir)) {
+                            $error = 'Folder assets/uploads/material/ tidak dapat ditulisi (not writable). Periksa izin Persistent Volume.';
+                        } else {
+                            $fileName = strtolower($id) . '-' . time() . '-' . bin2hex(random_bytes(4)) . '.' . $ext;
+                            $destPath = $uploadDir . '/' . $fileName;
+
+                            if (!move_uploaded_file($_FILES['gambar']['tmp_name'], $destPath)) {
+                                $error = 'Gagal menyimpan file foto ke folder assets/uploads/material/.';
+                            } else {
+                                $uploadedFilePath = $destPath;
+                                $newGambarDbPath  = 'assets/uploads/material/' . $fileName;
+                                $newFotoDataUri   = compressImageToBase64DataUri($destPath, 800, 75);
+                                if ($existingGambar !== '' && str_starts_with($existingGambar, 'assets/uploads/material/')) {
+                                    $oldFileToRemove = __DIR__ . '/../assets/uploads/material/' . basename($existingGambar);
+                                }
+                            }
                         }
                     }
                 }
@@ -106,19 +119,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         satuan = :satuan,
                         total_stok = :stok,
                         batas_minimum = :min,
-                        gambar = :gambar
+                        gambar = :gambar,
+                        foto_data = :foto_data
                     WHERE id_material = :id
                 ");
                 $upd->execute([
-                    ':nama'   => $nama_material,
-                    ':kat'    => $kategori,
-                    ':merek'  => $merek !== '' ? $merek : null,
-                    ':spek'   => $spesifikasi_teknis !== '' ? $spesifikasi_teknis : null,
-                    ':satuan' => $satuan,
-                    ':stok'   => $total_stok,
-                    ':min'    => $batas_minimum,
-                    ':gambar' => $newGambarDbPath,
-                    ':id'     => $id,
+                    ':nama'      => $nama_material,
+                    ':kat'       => $kategori,
+                    ':merek'     => $merek !== '' ? $merek : null,
+                    ':spek'      => $spesifikasi_teknis !== '' ? $spesifikasi_teknis : null,
+                    ':satuan'    => $satuan,
+                    ':stok'      => $total_stok,
+                    ':min'       => $batas_minimum,
+                    ':gambar'    => $newGambarDbPath,
+                    ':foto_data' => $newFotoDataUri,
+                    ':id'        => $id,
                 ]);
                 if ($oldFileToRemove && file_exists($oldFileToRemove) && $oldFileToRemove !== $uploadedFilePath) {
                     @unlink($oldFileToRemove);
@@ -286,8 +301,8 @@ include __DIR__ . '/../layout/header.php';
 
                             <label for="inputGambar" class="upload-preview-stage mb-3" id="previewStage">
                                 <img id="livePreviewImg"
-                                     src="<?= $hasExistingImg ? '/' . htmlspecialchars($existingGambar) : '' ?>"
-                                     data-original-src="<?= $hasExistingImg ? '/' . htmlspecialchars($existingGambar) : '' ?>"
+                                     src="<?= $hasExistingImg ? htmlspecialchars($existingImgSrc) : '' ?>"
+                                     data-original-src="<?= $hasExistingImg ? htmlspecialchars($existingImgSrc) : '' ?>"
                                      alt="Preview Foto Material"
                                      class="<?= $hasExistingImg ? '' : 'd-none' ?>">
                                 <div id="previewPlaceholder" class="text-center p-3 <?= $hasExistingImg ? 'd-none' : '' ?>">

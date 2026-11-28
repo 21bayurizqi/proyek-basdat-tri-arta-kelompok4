@@ -2,6 +2,8 @@
 require_once __DIR__ . '/config/auth.php';
 requireAuth();
 require_once __DIR__ . '/config/db.php';
+require_once __DIR__ . '/config/app_helpers.php';
+ensureLeadsExtraColumns($pdo);
 include __DIR__ . '/layout/header.php';
 
 // 1. Data SCM / Warehouse (Live PostgreSQL)
@@ -10,7 +12,7 @@ $totalUnitAll  = (int)$pdo->query("SELECT COALESCE(SUM(total_stok), 0) FROM mate
 $pendingKeluar = (int)$pdo->query("SELECT COUNT(*) FROM barang_keluar WHERE status_approval = 'Pending Approval'")->fetchColumn();
 
 $restockTop5 = $pdo->query("
-    SELECT id_material, nama_material, kategori, merek, total_stok, batas_minimum, satuan, gambar,
+    SELECT id_material, nama_material, kategori, merek, total_stok, batas_minimum, satuan, gambar, foto_data,
            (batas_minimum - total_stok) AS jumlah_harus_restock
     FROM material
     WHERE total_stok < batas_minimum
@@ -18,17 +20,12 @@ $restockTop5 = $pdo->query("
     LIMIT 5
 ")->fetchAll();
 
-$lowStockCount  = (int)$pdo->query("SELECT COUNT(*) FROM material WHERE total_stok < batas_minimum")->fetchColumn();
-$safeStockCount = max(0, $totalMaterial - $lowStockCount);
-$isMaterialDummy = ($totalMaterial === 0);
-if ($isMaterialDummy) {
-    $safeStockCount = 6;
-    $lowStockCount  = 2;
-    $totalMaterial  = 8;
-}
-$stockHealthPct = $totalMaterial > 0 ? (int)round(($safeStockCount / $totalMaterial) * 100) : 100;
+$lowStockCount   = (int)$pdo->query("SELECT COUNT(*) FROM material WHERE total_stok < batas_minimum")->fetchColumn();
+$safeStockCount  = max(0, $totalMaterial - $lowStockCount);
+$hasMaterialData = ($totalMaterial > 0);
+$stockHealthPct  = $totalMaterial > 0 ? (int)round(($safeStockCount / $totalMaterial) * 100) : 0;
 
-// 2. Distribusi Kategori Material (Live PostgreSQL + fallback jika kosong)
+// 2. Distribusi Kategori Material (Live PostgreSQL)
 $katRows = $pdo->query("
     SELECT kategori, COUNT(*) AS jml, COALESCE(SUM(total_stok), 0) AS total_unit
     FROM material
@@ -36,29 +33,20 @@ $katRows = $pdo->query("
     ORDER BY jml DESC, kategori ASC
 ")->fetchAll();
 
-if (count($katRows) === 0) {
-    $katRows = [
-        ['kategori' => 'Irigasi',           'jml' => 3, 'total_unit' => 38],
-        ['kategori' => 'Perpipaan',         'jml' => 2, 'total_unit' => 110],
-        ['kategori' => 'Elektrikal',        'jml' => 2, 'total_unit' => 163],
-        ['kategori' => 'Kontrol & Otomasi', 'jml' => 1, 'total_unit' => 4],
-    ];
-}
-$katLabels = array_column($katRows, 'kategori');
-$katCounts = array_map('intval', array_column($katRows, 'jml'));
-$katUnits  = array_map('intval', array_column($katRows, 'total_unit'));
+$katLabels   = array_column($katRows, 'kategori');
+$katCounts   = array_map('intval', array_column($katRows, 'jml'));
+$katUnits    = array_map('intval', array_column($katRows, 'total_unit'));
+$hasKatData  = ($totalMaterial > 0 && array_sum($katCounts) > 0);
 
-// 3. Data CRM / Leads Pipeline & Win/Loss Ratio (Live PostgreSQL + fallback proporsional jika kosong)
-$funnelStages = ['New Lead', 'Opportunity', 'Site Visit', 'Quotation'];
+// 3. Data CRM / Leads Pipeline & Win/Loss Ratio (Live PostgreSQL)
+$funnelStages = ['New Lead', 'Opportunity', 'Quotation'];
 $stageCounts  = [
     'New Lead'    => 0,
     'Opportunity' => 0,
-    'Site Visit'  => 0,
     'Quotation'   => 0,
     'Win'         => 0,
     'Loss'        => 0,
 ];
-$isLeadsDummy = false;
 
 try {
     $leadRows = $pdo->query("
@@ -67,43 +55,20 @@ try {
         GROUP BY tahapan_pipeline
     ")->fetchAll();
 
-    $totalLeadsDb = 0;
     foreach ($leadRows as $lr) {
         $st = $lr['tahapan_pipeline'];
         $cn = (int)$lr['jml'];
         if (array_key_exists($st, $stageCounts)) {
             $stageCounts[$st] = $cn;
         }
-        $totalLeadsDb += $cn;
-    }
-
-    if ($totalLeadsDb === 0) {
-        $isLeadsDummy = true;
-        $stageCounts = [
-            'New Lead'    => 8,
-            'Opportunity' => 6,
-            'Site Visit'  => 4,
-            'Quotation'   => 3,
-            'Win'         => 6,
-            'Loss'        => 2,
-        ];
     }
 } catch (PDOException $e) {
-    $isLeadsDummy = true;
-    $stageCounts = [
-        'New Lead'    => 8,
-        'Opportunity' => 6,
-        'Site Visit'  => 4,
-        'Quotation'   => 3,
-        'Win'         => 6,
-        'Loss'        => 2,
-    ];
+    // Biarkan 0 agar menampilkan empty state dengan aman
 }
 
 $funnelCounts = [
     $stageCounts['New Lead'],
     $stageCounts['Opportunity'],
-    $stageCounts['Site Visit'],
     $stageCounts['Quotation'],
 ];
 $leadsAktif  = array_sum($funnelCounts);
@@ -111,16 +76,8 @@ $leadsWin    = $stageCounts['Win'];
 $leadsLoss   = $stageCounts['Loss'];
 $leadsClosed = $leadsWin + $leadsLoss;
 $winRatePct  = $leadsClosed > 0 ? (int)round(($leadsWin / $leadsClosed) * 100) : 0;
-
-// Fallback proporsional untuk Pie Chart Win/Loss bila belum ada prospek berstatus Win/Loss
-$isWinLossDummy = $isLeadsDummy;
-$pieWin  = $leadsWin;
-$pieLoss = $leadsLoss;
-if ($leadsClosed === 0) {
-    $isWinLossDummy = true;
-    $pieWin  = 6;
-    $pieLoss = 2;
-}
+$hasPipelineData = ($leadsAktif > 0);
+$hasWinLossData  = ($leadsClosed > 0);
 ?>
 
 <style>
@@ -169,6 +126,58 @@ if ($leadsClosed === 0) {
         max-width: 100%;
         max-height: 100%;
     }
+    .chart-empty-state {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: 1.25rem 1.5rem;
+        border-radius: 14px;
+        background: linear-gradient(145deg, rgba(255, 255, 255, 0.56) 0%, rgba(235, 243, 252, 0.45) 100%);
+        border: 1px dashed rgba(13, 85, 155, 0.18);
+    }
+    .chart-empty-icon {
+        width: 54px;
+        height: 54px;
+        border-radius: 50%;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.4rem;
+        margin-bottom: 0.75rem;
+        flex-shrink: 0;
+    }
+    .chart-empty-icon.theme-orange {
+        background: rgba(242, 101, 34, 0.12);
+        color: #F26522;
+        border: 1px solid rgba(242, 101, 34, 0.2);
+    }
+    .chart-empty-icon.theme-navy {
+        background: rgba(13, 85, 155, 0.12);
+        color: var(--ta-blue);
+        border: 1px solid rgba(13, 85, 155, 0.2);
+    }
+    .chart-empty-icon.theme-green {
+        background: rgba(16, 185, 129, 0.12);
+        color: #059669;
+        border: 1px solid rgba(16, 185, 129, 0.22);
+    }
+    .chart-empty-title {
+        font-size: 0.95rem;
+        font-weight: 700;
+        color: var(--ta-navy);
+        margin-bottom: 0.3rem;
+    }
+    .chart-empty-desc {
+        font-size: 13px;
+        color: var(--text-muted);
+        max-width: 340px;
+        line-height: 1.45;
+        margin-bottom: 0;
+    }
     .doughnut-center-kpi {
         position: absolute;
         top: 46%;
@@ -215,7 +224,7 @@ if ($leadsClosed === 0) {
     <div class="d-flex align-items-center gap-2 flex-wrap">
         <a href="/barang/index.php" class="btn-toolbar-white"><i class="bi bi-box-seam"></i> Warehouse SCM</a>
         <a href="/leads/index.php" class="btn-toolbar-primary"><i class="bi bi-speedometer2"></i> CRM Leads</a>
-        <a href="/transaksi_qr/index.php" class="btn-toolbar-orange"><i class="bi bi-qr-code-scan"></i> Scan QR Keluar</a>
+        <a href="/transaksi_qr/index.php" class="btn-toolbar-orange"><i class="bi bi-qr-code-scan"></i> Scan &amp; Barang Keluar</a>
     </div>
 </header>
 
@@ -261,11 +270,22 @@ if ($leadsClosed === 0) {
                     </span>
                 </div>
                 <div class="chart-canvas-wrap">
-                    <canvas id="chartStockHealth"></canvas>
-                    <div class="doughnut-center-kpi">
-                        <div class="doughnut-center-val"><?= $stockHealthPct ?>%</div>
-                        <div class="doughnut-center-lbl">Stok Aman</div>
-                    </div>
+                    <?php if ($hasMaterialData): ?>
+                        <canvas id="chartStockHealth"></canvas>
+                        <div class="doughnut-center-kpi">
+                            <div class="doughnut-center-val"><?= $stockHealthPct ?>%</div>
+                            <div class="doughnut-center-lbl">Stok Aman</div>
+                        </div>
+                    <?php else: ?>
+                        <div class="chart-empty-state">
+                            <div class="chart-empty-icon theme-navy"><i class="bi bi-box-seam"></i></div>
+                            <div class="chart-empty-title">Belum Ada Data Material Gudang</div>
+                            <p class="chart-empty-desc">Tambahkan data material gudang untuk memantau kesehatan stok secara real-time.</p>
+                            <a href="/barang/index.php" class="btn-toolbar-primary mt-3" style="font-size: 12.5px; padding: 0.38rem 0.85rem;">
+                                <i class="bi bi-box-seam"></i> Kelola Material
+                            </a>
+                        </div>
+                    <?php endif; ?>
                 </div>
             </div>
         </div>
@@ -283,7 +303,18 @@ if ($leadsClosed === 0) {
                     </a>
                 </div>
                 <div class="chart-canvas-wrap">
-                    <canvas id="chartCategoryDist"></canvas>
+                    <?php if ($hasKatData): ?>
+                        <canvas id="chartCategoryDist"></canvas>
+                    <?php else: ?>
+                        <div class="chart-empty-state">
+                            <div class="chart-empty-icon theme-navy"><i class="bi bi-tags-fill"></i></div>
+                            <div class="chart-empty-title">Belum Ada Data Material Gudang</div>
+                            <p class="chart-empty-desc">Distribusi kategori akan tampil secara otomatis setelah material terdaftar di gudang.</p>
+                            <a href="/barang/index.php" class="btn-toolbar-white mt-3" style="font-size: 12.5px; padding: 0.38rem 0.85rem;">
+                                <i class="bi bi-collection"></i> Lihat Master Material
+                            </a>
+                        </div>
+                    <?php endif; ?>
                 </div>
             </div>
         </div>
@@ -296,12 +327,23 @@ if ($leadsClosed === 0) {
                         <h2 class="analytics-card-title">Sales Pipeline &amp; Leads</h2>
                         <div class="analytics-card-sub">Funnel jumlah prospek proyek berdasarkan tahapan aktif</div>
                     </div>
-                    <span class="badge-pill-soft" style="<?= $isLeadsDummy ? 'background: #FFF7ED; color: var(--ta-orange);' : 'background: #ECFDF5; color: var(--ta-green);' ?>">
-                        <?= $isLeadsDummy ? 'Data Simulasi' : 'Live CRM' ?>
+                    <span class="badge-pill-soft" style="<?= $hasPipelineData ? 'background: #ECFDF5; color: var(--ta-green);' : 'background: #FFF7ED; color: var(--ta-orange);' ?>">
+                        <?= $hasPipelineData ? 'Live CRM' : '0 Prospek Aktif' ?>
                     </span>
                 </div>
                 <div class="chart-canvas-wrap">
-                    <canvas id="chartSalesPipeline"></canvas>
+                    <?php if ($hasPipelineData): ?>
+                        <canvas id="chartSalesPipeline"></canvas>
+                    <?php else: ?>
+                        <div class="chart-empty-state">
+                            <div class="chart-empty-icon theme-orange"><i class="bi bi-funnel-fill"></i></div>
+                            <div class="chart-empty-title">Belum Ada Prospek Aktif Saat Ini</div>
+                            <p class="chart-empty-desc">Seluruh prospek sebelumnya sudah selesai (Win/Loss) atau belum ada lead baru yang masuk ke pipeline.</p>
+                            <a href="/leads/index.php?open=tambah_lead" class="btn-toolbar-orange mt-3" style="font-size: 12.5px; padding: 0.38rem 0.9rem;">
+                                <i class="bi bi-plus-lg"></i> Tambah Lead Baru
+                            </a>
+                        </div>
+                    <?php endif; ?>
                 </div>
             </div>
         </div>
@@ -315,16 +357,21 @@ if ($leadsClosed === 0) {
                         <div class="analytics-card-sub">Rasio persentase proyek yang berhasil dimenangkan vs gagal</div>
                     </div>
                     <div class="d-flex align-items-center gap-2">
-                        <?php if ($isWinLossDummy): ?>
-                            <span class="badge-pill-soft" style="background: #FFF7ED; color: var(--ta-orange);">Data Simulasi</span>
-                        <?php endif; ?>
                         <a href="/leads/index.php" class="text-decoration-none fw-semibold" style="font-size: 0.76rem; color: var(--ta-orange);">
                             CRM Pipeline &rarr;
                         </a>
                     </div>
                 </div>
                 <div class="chart-canvas-wrap">
-                    <canvas id="chartWinLoss"></canvas>
+                    <?php if ($hasWinLossData): ?>
+                        <canvas id="chartWinLoss"></canvas>
+                    <?php else: ?>
+                        <div class="chart-empty-state">
+                            <div class="chart-empty-icon theme-green"><i class="bi bi-trophy-fill"></i></div>
+                            <div class="chart-empty-title">Belum Ada Riwayat Win / Loss</div>
+                            <p class="chart-empty-desc">Rasio kemenangan akan muncul setelah ada prospek yang ditutup menjadi Win atau Loss.</p>
+                        </div>
+                    <?php endif; ?>
                 </div>
             </div>
         </div>
@@ -365,10 +412,10 @@ if ($leadsClosed === 0) {
                     <div class="restock-row flex-wrap">
                         <div class="d-flex align-items-center gap-3 min-w-0">
                             <?php
-                            $rImgPath = !empty($r['gambar']) ? ltrim($r['gambar'], '/') : '';
-                            if ($rImgPath !== '' && file_exists(__DIR__ . '/' . $rImgPath)):
+                            $rImgSrc = resolveMaterialImageSrc($r['gambar'] ?? null, $r['foto_data'] ?? null, __DIR__);
+                            if ($rImgSrc !== ''):
                             ?>
-                                <img src="/<?= htmlspecialchars($rImgPath) ?>" alt="<?= htmlspecialchars($r['nama_material']) ?>" style="width: 46px; height: 46px; object-fit: cover; border-radius: 10px; border: 1px solid #E2E8F0; flex-shrink: 0;">
+                                <img src="<?= htmlspecialchars($rImgSrc) ?>" alt="<?= htmlspecialchars($r['nama_material']) ?>" style="width: 46px; height: 46px; object-fit: cover; border-radius: 10px; border: 1px solid #E2E8F0; flex-shrink: 0;">
                             <?php else: ?>
                                 <div class="prod-thumb" style="width: 46px; height: 46px; font-size: 1rem; background: rgba(240, 246, 253, 0.9); color: var(--ta-navy); border-color: rgba(243, 130, 24, 0.35);">
                                     <i class="bi bi-box-seam"></i>
@@ -406,9 +453,10 @@ if ($leadsClosed === 0) {
     </div>
 </main>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="/assets/vendor/chart.umd.min.js"></script>
 <script>
 (function () {
+    if (typeof Chart === 'undefined') return;
     Chart.defaults.font.family = "'Inter', -apple-system, BlinkMacSystemFont, sans-serif";
     Chart.defaults.color = '#6B7280';
 
@@ -524,9 +572,8 @@ if ($leadsClosed === 0) {
                     label: 'Jumlah Prospek',
                     data: <?= json_encode($funnelCounts) ?>,
                     backgroundColor: [
-                        'rgba(243, 130, 24, 0.55)',
-                        'rgba(243, 130, 24, 0.72)',
-                        'rgba(243, 130, 24, 0.88)',
+                        'rgba(243, 130, 24, 0.58)',
+                        'rgba(243, 130, 24, 0.80)',
                         '#F38218'
                     ],
                     hoverBackgroundColor: '#062A4E',
@@ -573,7 +620,7 @@ if ($leadsClosed === 0) {
             data: {
                 labels: ['Proyek Win', 'Proyek Loss'],
                 datasets: [{
-                    data: [<?= (int)$pieWin ?>, <?= (int)$pieLoss ?>],
+                    data: [<?= (int)$leadsWin ?>, <?= (int)$leadsLoss ?>],
                     backgroundColor: ['#135E38', '#EF4444'],
                     hoverBackgroundColor: ['#0D559B', '#DC2626'],
                     borderWidth: 3,

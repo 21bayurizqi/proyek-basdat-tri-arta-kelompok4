@@ -1,0 +1,13 @@
+{
+  "name": "tri-arta-konstruksi/scm-qr-crm",
+  "description": "Sistem SCM, QR Inventory & CRM Pipeline — PT Tri Arta Konstruksi",
+  "type": "project",
+  "require": {
+    "php": "^8.2",
+    "ext-pdo": "*",
+    "ext-pdo_pgsql": "*",
+    "ext-fileinfo": "*",
+    "ext-mbstring": "*"
+  }
+}
+

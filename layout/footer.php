@@ -4,98 +4,97 @@
         </footer>
     </div><!-- /.content-area -->
 </div><!-- /.app-shell -->
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<script src="https://unpkg.com/html5-qrcode"></script>
+
+<!-- Modal Tambah Material Category Dinamis (Global dari Sidebar) -->
+<div class="modal fade" id="addCategoryModal" tabindex="-1" aria-labelledby="addCategoryModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered" style="max-width: 420px;">
+        <div class="modal-content rounded-4 overflow-hidden">
+            <div class="px-4 pt-4 pb-2 d-flex align-items-center justify-content-between gap-2">
+                <div class="d-flex align-items-center gap-2">
+                    <div class="prod-thumb" style="width: 38px; height: 38px; font-size: 1rem; color: var(--ta-blue);">
+                        <i class="bi bi-tags-fill"></i>
+                    </div>
+                    <div>
+                        <h5 class="mb-0 fw-bold" id="addCategoryModalLabel" style="color: var(--ta-navy); font-size: 1.05rem;">Tambah Material Category</h5>
+                        <div class="col-micro-lbl mb-0">Kategori baru langsung tersedia di sidebar &amp; form material</div>
+                    </div>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
+            </div>
+            <form method="POST" action="/barang/kategori_action.php">
+                <input type="hidden" name="aksi" value="tambah">
+                <input type="hidden" name="return_to" value="<?= htmlspecialchars($currentPath ?? '/barang/index.php') ?>">
+                <div class="modal-body px-4 pt-3 pb-3">
+                    <div>
+                        <label for="inputNamaKategoriBaru" class="form-label fw-semibold" style="font-size: 14px; color: var(--ta-navy);">
+                            Nama Kategori <span style="color: var(--ta-orange);">*</span>
+                        </label>
+                        <input type="text" id="inputNamaKategoriBaru" name="nama_kategori" class="form-control" maxlength="100" placeholder="Contoh: Pompa & Aksesoris" required>
+                    </div>
+                </div>
+                <div class="px-4 pb-4 pt-2 d-flex justify-content-end gap-2">
+                    <button type="button" class="btn-toolbar-white" data-bs-dismiss="modal">Batal</button>
+                    <button type="submit" class="btn-toolbar-primary">
+                        <i class="bi bi-check-lg"></i> Simpan Kategori
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script src="/assets/vendor/bootstrap.bundle.min.js"></script>
+<script src="/assets/vendor/qrcode.min.js"></script>
+<script src="/assets/vendor/html5-qrcode.min.js"></script>
 <script>
-(function () {
-    const STORAGE_KEY = 'ta_nav_sidebar_open_v2';
-    const root        = document.documentElement;
-    const toggleBtn   = document.getElementById('sidebarToggleBtn');
-    const backdrop    = document.getElementById('navSidebarBackdrop');
+document.addEventListener('DOMContentLoaded', function () {
+    // Auto-dismiss banner notifikasi (.alert) setelah 10 detik dengan animasi fade-out halus
+    document.querySelectorAll('.alert:not(.d-none)').forEach(function (el) {
+        let removeTimer = null;
+        let dismissed   = false;
 
-    // Aktifkan animasi kembali setelah render awal
-    requestAnimationFrame(function () {
-        root.classList.remove('nav-sidebar-no-anim');
-    });
-
-    function syncAria() {
-        if (toggleBtn) {
-            toggleBtn.setAttribute('aria-expanded', root.classList.contains('nav-sidebar-open') ? 'true' : 'false');
+        function cancelTimers() {
+            dismissed = true;
+            if (autoTimer) {
+                clearTimeout(autoTimer);
+                autoTimer = null;
+            }
+            if (removeTimer) {
+                clearTimeout(removeTimer);
+                removeTimer = null;
+            }
         }
-    }
 
-    function setSidebarOpen(isOpen, persistDesktop) {
-        root.classList.toggle('nav-sidebar-open', isOpen);
-        syncAria();
-        if (persistDesktop && window.innerWidth >= 992) {
-            try {
-                localStorage.setItem(STORAGE_KEY, isOpen ? 'true' : 'false');
-            } catch (e) {}
-        }
-        // Trigger resize agar Chart.js menyesuaikan lebar area konten secara halus
-        setTimeout(function () {
-            window.dispatchEvent(new Event('resize'));
-        }, 270);
-    }
+        let autoTimer = setTimeout(function () {
+            if (dismissed || !document.body.contains(el)) return;
+            el.style.transition = 'opacity 0.45s ease, transform 0.45s ease';
+            requestAnimationFrame(function () {
+                if (dismissed || !document.body.contains(el)) return;
+                el.style.opacity   = '0';
+                el.style.transform = 'translateY(-6px)';
+            });
+            removeTimer = setTimeout(function () {
+                if (dismissed || !document.body.contains(el)) return;
+                try {
+                    if (typeof bootstrap !== 'undefined' && bootstrap.Alert) {
+                        bootstrap.Alert.getOrCreateInstance(el).close();
+                    } else {
+                        el.remove();
+                    }
+                } catch (err) {
+                    if (document.body.contains(el)) el.remove();
+                }
+            }, 450);
+        }, 10000);
 
-    if (toggleBtn) {
-        toggleBtn.addEventListener('click', function () {
-            const nextState = !root.classList.contains('nav-sidebar-open');
-            setSidebarOpen(nextState, true);
-        });
-    }
-
-    if (backdrop) {
-        backdrop.addEventListener('click', function () {
-            setSidebarOpen(false, false);
-        });
-    }
-
-    document.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape' && root.classList.contains('nav-sidebar-open') && window.innerWidth < 992) {
-            setSidebarOpen(false, false);
+        el.addEventListener('close.bs.alert', cancelTimers);
+        el.addEventListener('closed.bs.alert', cancelTimers);
+        const closeBtn = el.querySelector('.btn-close');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', cancelTimers);
         }
     });
-
-    // Simpan & pulihkan status buka/tutup tiap grup accordion sidebar di localStorage
-    const ACC_KEY = 'ta_nav_accordion_state_v1';
-    let accState = {};
-    try {
-        accState = JSON.parse(localStorage.getItem(ACC_KEY) || '{}') || {};
-    } catch (e) {
-        accState = {};
-    }
-
-    document.querySelectorAll('.nav-acc-list[data-acc-key]').forEach(function (panel) {
-        const key = panel.getAttribute('data-acc-key');
-        const btn = document.querySelector('.nav-acc-btn[data-acc-key="' + key + '"]');
-        if (!key || !btn) return;
-
-        if (accState[key] === false) {
-            panel.classList.remove('show');
-            btn.classList.add('collapsed');
-            btn.setAttribute('aria-expanded', 'false');
-        } else {
-            panel.classList.add('show');
-            btn.classList.remove('collapsed');
-            btn.setAttribute('aria-expanded', 'true');
-        }
-
-        panel.addEventListener('shown.bs.collapse', function () {
-            btn.setAttribute('aria-expanded', 'true');
-            accState[key] = true;
-            try { localStorage.setItem(ACC_KEY, JSON.stringify(accState)); } catch (e) {}
-        });
-        panel.addEventListener('hidden.bs.collapse', function () {
-            btn.setAttribute('aria-expanded', 'false');
-            accState[key] = false;
-            try { localStorage.setItem(ACC_KEY, JSON.stringify(accState)); } catch (e) {}
-        });
-    });
-
-    syncAria();
-})();
+});
 </script>
 </body>
 </html>

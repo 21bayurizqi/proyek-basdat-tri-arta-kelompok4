@@ -2,6 +2,10 @@
 require_once __DIR__ . '/../config/auth.php';
 requireAuth();
 require_once __DIR__ . '/../config/db.php';
+require_once __DIR__ . '/../config/app_helpers.php';
+
+ensureLeadsExtraColumns($pdo);
+
 include __DIR__ . '/../layout/header.php';
 
 // 1. Ambil data riil dari tabel leads JOIN staf
@@ -9,7 +13,6 @@ $totalLeadsDb = 0;
 $stageMap = [
     'New Lead'    => 0,
     'Opportunity' => 0,
-    'Site Visit'  => 0,
     'Quotation'   => 0,
     'Win'         => 0,
     'Loss'        => 0,
@@ -20,9 +23,16 @@ $channelMap = [
     'Relasi'       => 0,
     'Lainnya'      => 0,
 ];
-$picStats    = [];
-$monthlyMap  = [];
-$lossReasons = [];
+$picStats        = [];
+$monthlyMap      = [];
+$winIndicators   = [];
+$lossIndicators  = [];
+$channelOutcome  = [
+    'WhatsApp'     => ['win' => 0, 'aktif' => 0, 'loss' => 0],
+    'Relasi'       => ['win' => 0, 'aktif' => 0, 'loss' => 0],
+    'Kabar Burung' => ['win' => 0, 'aktif' => 0, 'loss' => 0],
+    'Lainnya'      => ['win' => 0, 'aktif' => 0, 'loss' => 0],
+];
 
 try {
     $totalLeadsDb = (int)$pdo->query("SELECT COUNT(*) FROM leads")->fetchColumn();
@@ -79,43 +89,54 @@ try {
             ];
         }
 
-        // e. Analisis penyebab gagal / Loss Reasons
-        $lossRows = $pdo->query("
-            SELECT COALESCE(NULLIF(TRIM(alasan_loss), ''), 'Alasan Belum Dicatat') AS alasan,
+        // e. Efektivitas Sumber Lead (Win vs Aktif vs Loss per Channel)
+        $chOutcomeRows = $pdo->query("
+            SELECT COALESCE(sumber_informasi, 'Lainnya') AS sumber,
+                   SUM(CASE WHEN tahapan_pipeline = 'Win' THEN 1 ELSE 0 END) AS jml_win,
+                   SUM(CASE WHEN tahapan_pipeline NOT IN ('Win', 'Loss') THEN 1 ELSE 0 END) AS jml_aktif,
+                   SUM(CASE WHEN tahapan_pipeline = 'Loss' THEN 1 ELSE 0 END) AS jml_loss
+            FROM leads
+            GROUP BY COALESCE(sumber_informasi, 'Lainnya')
+        ")->fetchAll();
+        foreach ($chOutcomeRows as $cor) {
+            $k = array_key_exists($cor['sumber'], $channelOutcome) ? $cor['sumber'] : 'Lainnya';
+            $channelOutcome[$k]['win']   += (int)$cor['jml_win'];
+            $channelOutcome[$k]['aktif'] += (int)$cor['jml_aktif'];
+            $channelOutcome[$k]['loss']  += (int)$cor['jml_loss'];
+        }
+
+        // f. Statistik Indikator Kemenangan (Win) - termasuk indikator kustom dari 'Lainnya'
+        $winIndRows = $pdo->query("
+            SELECT COALESCE(NULLIF(TRIM(indikator_hasil), ''), 'Relasi / Klien Percaya') AS indikator,
+                   COUNT(*) AS jml
+            FROM leads
+            WHERE tahapan_pipeline = 'Win'
+            GROUP BY COALESCE(NULLIF(TRIM(indikator_hasil), ''), 'Relasi / Klien Percaya')
+            ORDER BY jml DESC, indikator ASC
+        ")->fetchAll();
+        foreach ($winIndRows as $wr) {
+            $winIndicators[$wr['indikator']] = (int)$wr['jml'];
+        }
+
+        // g. Statistik Indikator Kekalahan (Loss) - termasuk indikator kustom dari 'Lainnya'
+        $lossIndRows = $pdo->query("
+            SELECT COALESCE(NULLIF(TRIM(indikator_hasil), ''), NULLIF(TRIM(alasan_loss), ''), 'Harga Kalah Bersaing') AS indikator,
                    COUNT(*) AS jml
             FROM leads
             WHERE tahapan_pipeline = 'Loss'
-            GROUP BY COALESCE(NULLIF(TRIM(alasan_loss), ''), 'Alasan Belum Dicatat')
-            ORDER BY jml DESC, alasan ASC
-            LIMIT 6
+            GROUP BY COALESCE(NULLIF(TRIM(indikator_hasil), ''), NULLIF(TRIM(alasan_loss), ''), 'Harga Kalah Bersaing')
+            ORDER BY jml DESC, indikator ASC
         ")->fetchAll();
-        foreach ($lossRows as $lr) {
-            $lossReasons[$lr['alasan']] = (int)$lr['jml'];
+        foreach ($lossIndRows as $lir) {
+            $lossIndicators[$lir['indikator']] = (int)$lir['jml'];
         }
     }
 } catch (PDOException $e) {
     $totalLeadsDb = 0;
 }
 
-// Fallback proporsional apabila tabel leads masih kosong / sangat minim (< 3 data)
-$isSimulated = ($totalLeadsDb < 3);
-
-if ($isSimulated) {
-    $stageMap = [
-        'New Lead'    => 14,
-        'Opportunity' => 10,
-        'Site Visit'  => 7,
-        'Quotation'   => 5,
-        'Win'         => 9,
-        'Loss'        => 4,
-    ];
-    $channelMap = [
-        'WhatsApp'     => 19,
-        'Relasi'       => 15,
-        'Kabar Burung' => 9,
-        'Lainnya'      => 6,
-    ];
-}
+// Data Live PostgreSQL (tanpa data dummy bila kosong — diganti Empty State estetik)
+$isSimulated = false;
 
 // Hitung 4 KPI Utama
 $kpiTotalLeads = array_sum($stageMap);
@@ -123,21 +144,22 @@ $kpiWin        = $stageMap['Win'];
 $kpiLoss       = $stageMap['Loss'];
 $kpiClosed     = $kpiWin + $kpiLoss;
 $kpiWinRate    = $kpiClosed > 0 ? (int)round(($kpiWin / $kpiClosed) * 100) : 0;
-$kpiAktifJalan = $stageMap['Opportunity'] + $stageMap['Site Visit'] + $stageMap['Quotation'];
+$kpiAktifJalan = $stageMap['New Lead'] + $stageMap['Opportunity'] + $stageMap['Quotation'];
 
 // Data Grafik 1: Sales Funnel Conversion
-$funnelLabels = ['New Lead', 'Opportunity', 'Site Visit', 'Quotation', 'Win'];
-$funnelValues = [
+$funnelLabels   = ['New Lead', 'Opportunity', 'Quotation', 'Win'];
+$funnelValues   = [
     $stageMap['New Lead'],
     $stageMap['Opportunity'],
-    $stageMap['Site Visit'],
     $stageMap['Quotation'],
     $stageMap['Win'],
 ];
+$hasFunnelData  = (array_sum($funnelValues) > 0);
 
 // Data Grafik 2: Channel Effectiveness
-$channelLabels = array_keys($channelMap);
-$channelValues = array_values($channelMap);
+$channelLabels  = array_keys($channelMap);
+$channelValues  = array_values($channelMap);
+$hasChannelData = (array_sum($channelValues) > 0);
 
 // Data Grafik 3: Tren 6 Bulan Terakhir (Leads Masuk vs Proyek Win)
 $monthNames = [
@@ -148,60 +170,59 @@ $monthNames = [
 $trendLabels = [];
 $trendMasuk  = [];
 $trendWin    = [];
-$simMasuk    = [5, 7, 6, 9, 10, 12];
-$simWin      = [1, 2, 1, 2, 2, 3];
 
 for ($i = 5; $i >= 0; $i--) {
     $ts = strtotime("-$i months");
     $ym = date('Y-m', $ts);
     $label = ($monthNames[date('m', $ts)] ?? date('M', $ts)) . ' ' . date('y', $ts);
     $trendLabels[] = $label;
-
-    if ($isSimulated) {
-        $idx = 5 - $i;
-        $trendMasuk[] = $simMasuk[$idx];
-        $trendWin[]   = $simWin[$idx];
-    } else {
-        $trendMasuk[] = $monthlyMap[$ym]['masuk'] ?? 0;
-        $trendWin[]   = $monthlyMap[$ym]['win'] ?? 0;
-    }
+    $trendMasuk[]  = $monthlyMap[$ym]['masuk'] ?? 0;
+    $trendWin[]    = $monthlyMap[$ym]['win'] ?? 0;
 }
+$hasTrendData = ((array_sum($trendMasuk) + array_sum($trendWin)) > 0);
 
 // Data Grafik 4: Performa & Beban Kerja PIC Sales (Stacked Bar)
-if ($isSimulated || count($picStats) === 0) {
-    $stafSample = $pdo->query("SELECT nama FROM staf ORDER BY id_staf ASC LIMIT 4")->fetchAll(PDO::FETCH_COLUMN);
-    if (count($stafSample) < 3) {
-        $stafSample = ['Dofa Mairika', 'Taufan Kusuma', 'Rizky Pratama', 'Ismail Sahid'];
-    }
-    $simPicData = [
-        ['aktif' => 7, 'win' => 4, 'loss' => 1],
-        ['aktif' => 6, 'win' => 3, 'loss' => 1],
-        ['aktif' => 5, 'win' => 1, 'loss' => 1],
-        ['aktif' => 4, 'win' => 1, 'loss' => 1],
-    ];
-    $picStats = [];
-    foreach ($stafSample as $idx => $nm) {
-        $d = $simPicData[$idx % count($simPicData)];
-        $picStats[] = ['nama' => $nm, 'aktif' => $d['aktif'], 'win' => $d['win'], 'loss' => $d['loss']];
-    }
-}
-$picLabels = array_map(fn($p) => $p['nama'], $picStats);
-$picAktif  = array_map(fn($p) => $p['aktif'], $picStats);
-$picWin    = array_map(fn($p) => $p['win'], $picStats);
-$picLoss   = array_map(fn($p) => $p['loss'], $picStats);
+$picLabels   = array_map(fn($p) => $p['nama'], $picStats);
+$picAktif    = array_map(fn($p) => $p['aktif'], $picStats);
+$picWin      = array_map(fn($p) => $p['win'], $picStats);
+$picLoss     = array_map(fn($p) => $p['loss'], $picStats);
+$hasPicData  = ((array_sum($picAktif) + array_sum($picWin) + array_sum($picLoss)) > 0);
 
-// Data Grafik 5: Analisis Penyebab Proyek Gagal (Loss Reasons)
-$isLossSimulated = ($isSimulated || count($lossReasons) === 0);
-if ($isLossSimulated) {
-    $lossReasons = [
-        'Harga Penawaran'    => 5,
-        'Kalah Tender'       => 3,
-        'Proyek Ditunda'     => 2,
-        'Spesifikasi Teknis' => 2,
-    ];
+// Data Grafik 5 & 6: Statistik Indikator Kemenangan (Win) & Kekalahan (Loss)
+$winIndLabels   = array_keys($winIndicators);
+$winIndValues   = array_values($winIndicators);
+$hasWinIndData  = (array_sum($winIndValues) > 0);
+
+$lossIndLabels  = array_keys($lossIndicators);
+$lossIndValues  = array_values($lossIndicators);
+$hasLossIndData = (array_sum($lossIndValues) > 0);
+
+// Data Grafik 7: Efektivitas Sumber Lead (Win vs Aktif vs Loss per Channel)
+$chOutLabels        = array_keys($channelOutcome);
+$chOutWin           = array_map(fn($c) => $c['win'], $channelOutcome);
+$chOutAktif         = array_map(fn($c) => $c['aktif'], $channelOutcome);
+$chOutLoss          = array_map(fn($c) => $c['loss'], $channelOutcome);
+$hasChOutcomeData   = ((array_sum($chOutWin) + array_sum($chOutAktif) + array_sum($chOutLoss)) > 0);
+
+// Hitung channel dengan Win Rate tertinggi
+$topChannelName = null;
+$topChannelRate = -1;
+$topChannelWins = -1;
+foreach ($channelOutcome as $chName => $stats) {
+    $closedCnt = $stats['win'] + $stats['loss'];
+    if ($closedCnt <= 0) {
+        continue;
+    }
+    $rate = (int)round(($stats['win'] / $closedCnt) * 100);
+    if ($rate > $topChannelRate || ($rate === $topChannelRate && $stats['win'] > $topChannelWins)) {
+        $topChannelRate = $rate;
+        $topChannelWins = $stats['win'];
+        $topChannelName = $chName;
+    }
 }
-$lossLabels = array_keys($lossReasons);
-$lossValues = array_values($lossReasons);
+$topChannelBadgeText = $topChannelName !== null
+    ? "Win Rate Tertinggi: $topChannelName ($topChannelRate%)"
+    : 'Belum Ada Proyek Closed';
 ?>
 
 <style>
@@ -269,6 +290,47 @@ $lossValues = array_values($lossReasons);
         transform: translate(-50%, -50%);
         text-align: center;
         pointer-events: none;
+    }
+    .crm-empty-state {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: 1.25rem 1.5rem;
+        border-radius: 14px;
+        background: linear-gradient(145deg, rgba(255, 255, 255, 0.56) 0%, rgba(235, 243, 252, 0.45) 100%);
+        border: 1px dashed rgba(13, 85, 155, 0.18);
+    }
+    .crm-empty-icon {
+        width: 54px;
+        height: 54px;
+        border-radius: 50%;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.35rem;
+        margin-bottom: 0.75rem;
+        flex-shrink: 0;
+    }
+    .crm-empty-icon.theme-orange { background: rgba(242, 101, 34, 0.12); color: #F26522; border: 1px solid rgba(242, 101, 34, 0.22); }
+    .crm-empty-icon.theme-green  { background: rgba(16, 185, 129, 0.12); color: #059669; border: 1px solid rgba(16, 185, 129, 0.22); }
+    .crm-empty-icon.theme-rose   { background: rgba(244, 63, 94, 0.12);  color: #E11D48; border: 1px solid rgba(244, 63, 94, 0.22); }
+    .crm-empty-icon.theme-navy   { background: rgba(13, 85, 155, 0.12);  color: var(--ta-blue); border: 1px solid rgba(13, 85, 155, 0.22); }
+    .crm-empty-title {
+        font-size: 0.96rem;
+        font-weight: 700;
+        color: var(--ta-navy);
+        margin-bottom: 0.3rem;
+    }
+    .crm-empty-desc {
+        font-size: 13px;
+        color: var(--text-muted);
+        max-width: 340px;
+        line-height: 1.45;
+        margin-bottom: 0;
     }
 </style>
 
@@ -350,7 +412,7 @@ $lossValues = array_values($lossReasons);
                     </div>
                 </div>
                 <div class="d-flex align-items-center justify-content-between mt-3">
-                    <span class="col-micro-lbl mb-0">Opportunity &bull; Site Visit &bull; Quotation</span>
+                    <span class="col-micro-lbl mb-0">New Lead &bull; Opportunity &bull; Quotation</span>
                 </div>
             </div>
         </div>
@@ -386,7 +448,18 @@ $lossValues = array_values($lossReasons);
                     <span class="badge-pill-soft" style="background: #FFF7ED; color: var(--ta-orange);">Funnel</span>
                 </div>
                 <div class="crm-chart-box">
-                    <canvas id="chartFunnelConv"></canvas>
+                    <?php if ($hasFunnelData): ?>
+                        <canvas id="chartFunnelConv"></canvas>
+                    <?php else: ?>
+                        <div class="crm-empty-state">
+                            <div class="crm-empty-icon theme-orange"><i class="bi bi-funnel-fill"></i></div>
+                            <div class="crm-empty-title">Belum Ada Prospek pada Sales Funnel</div>
+                            <p class="crm-empty-desc">Tambahkan prospek baru untuk melihat progres konversi dari New Lead hingga Win.</p>
+                            <a href="/leads/index.php?open=tambah_lead" class="btn-toolbar-orange mt-3" style="font-size: 12.5px; padding: 0.38rem 0.9rem;">
+                                <i class="bi bi-plus-lg"></i> Tambah Lead Baru
+                            </a>
+                        </div>
+                    <?php endif; ?>
                 </div>
             </div>
         </div>
@@ -401,11 +474,19 @@ $lossValues = array_values($lossReasons);
                     <span class="badge-pill-soft" style="background: #EFF6FF; color: var(--ta-blue);">Channel</span>
                 </div>
                 <div class="crm-chart-box d-flex align-items-center justify-content-center">
-                    <canvas id="chartLeadChannel"></canvas>
-                    <div class="channel-center-kpi">
-                        <div style="font-size: 1.55rem; font-weight: 800; color: var(--ta-navy); line-height: 1.1;"><?= array_sum($channelValues) ?></div>
-                        <div style="font-size: 11.5px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Prospek</div>
-                    </div>
+                    <?php if ($hasChannelData): ?>
+                        <canvas id="chartLeadChannel"></canvas>
+                        <div class="channel-center-kpi">
+                            <div style="font-size: 1.55rem; font-weight: 800; color: var(--ta-navy); line-height: 1.1;"><?= array_sum($channelValues) ?></div>
+                            <div style="font-size: 11.5px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Prospek</div>
+                        </div>
+                    <?php else: ?>
+                        <div class="crm-empty-state">
+                            <div class="crm-empty-icon theme-navy"><i class="bi bi-pie-chart-fill"></i></div>
+                            <div class="crm-empty-title">Belum Ada Data Sumber Lead</div>
+                            <p class="crm-empty-desc">Distribusi channel akan tampil otomatis setelah prospek mulai tercatat.</p>
+                        </div>
+                    <?php endif; ?>
                 </div>
             </div>
         </div>
@@ -423,13 +504,74 @@ $lossValues = array_values($lossReasons);
                     <span class="badge-pill-soft" style="background: #ECFDF5; color: var(--ta-green);">6 Bulan Terakhir</span>
                 </div>
                 <div class="crm-chart-box tall">
-                    <canvas id="chartMonthlyTrend"></canvas>
+                    <?php if ($hasTrendData): ?>
+                        <canvas id="chartMonthlyTrend"></canvas>
+                    <?php else: ?>
+                        <div class="crm-empty-state">
+                            <div class="crm-empty-icon theme-navy"><i class="bi bi-graph-up"></i></div>
+                            <div class="crm-empty-title">Belum Ada Tren Bulanan Tercatat</div>
+                            <p class="crm-empty-desc">Grafik pergerakan leads masuk vs proyek Win 6 bulan terakhir akan tampil setelah ada data prospek.</p>
+                        </div>
+                    <?php endif; ?>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- BARIS GRAFIK 3: Performa PIC Sales (Stacked Bar) + Analisis Penyebab Loss (Horizontal Bar) -->
+    <!-- BARIS GRAFIK 3: Statistik Indikator Kemenangan (Win) & Kekalahan (Loss) Berdampingan -->
+    <div class="row g-4 mb-4">
+        <div class="col-lg-6">
+            <div class="analytics-card crm-analytics-card">
+                <div class="d-flex align-items-start justify-content-between gap-2">
+                    <div>
+                        <h2 class="crm-card-title">Statistik Indikator Kemenangan (Win)</h2>
+                        <div class="crm-card-sub">Distribusi faktor utama kemenangan proyek berdasarkan indikator</div>
+                    </div>
+                    <span class="badge-pill-soft" style="<?= $hasWinIndData ? 'background: #ECFDF5; color: #047857;' : 'background: #F1F5F9; color: #64748B;' ?>">
+                        <?= $hasWinIndData ? 'Live Win' : 'Belum Ada Data' ?>
+                    </span>
+                </div>
+                <div class="crm-chart-box tall">
+                    <?php if ($hasWinIndData): ?>
+                        <canvas id="chartWinIndicators"></canvas>
+                    <?php else: ?>
+                        <div class="crm-empty-state">
+                            <div class="crm-empty-icon theme-green"><i class="bi bi-trophy-fill"></i></div>
+                            <div class="crm-empty-title">Belum Ada Indikator Kemenangan</div>
+                            <p class="crm-empty-desc">Statistik faktor kemenangan akan tampil otomatis setelah ada prospek yang ditutup menjadi Win.</p>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-6">
+            <div class="analytics-card crm-analytics-card">
+                <div class="d-flex align-items-start justify-content-between gap-2">
+                    <div>
+                        <h2 class="crm-card-title">Statistik Indikator Kekalahan (Loss)</h2>
+                        <div class="crm-card-sub">Distribusi faktor utama kegagalan penawaran berdasarkan indikator</div>
+                    </div>
+                    <span class="badge-pill-red" style="<?= $hasLossIndData ? '' : 'background: #F1F5F9; color: #64748B;' ?>">
+                        <?= $hasLossIndData ? 'Live Loss' : 'Belum Ada Data' ?>
+                    </span>
+                </div>
+                <div class="crm-chart-box tall">
+                    <?php if ($hasLossIndData): ?>
+                        <canvas id="chartLossIndicators"></canvas>
+                    <?php else: ?>
+                        <div class="crm-empty-state">
+                            <div class="crm-empty-icon theme-rose"><i class="bi bi-x-octagon-fill"></i></div>
+                            <div class="crm-empty-title">Belum Ada Indikator Kekalahan</div>
+                            <p class="crm-empty-desc">Statistik faktor kegagalan akan tampil otomatis setelah ada prospek yang ditutup menjadi Loss.</p>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- BARIS GRAFIK 4: Performa PIC Sales + Efektivitas Sumber Lead (Win vs Loss per Channel) -->
     <div class="row g-4">
         <div class="col-lg-6">
             <div class="analytics-card crm-analytics-card">
@@ -441,31 +583,53 @@ $lossValues = array_values($lossReasons);
                     <span class="badge-pill-soft" style="background: #EFF6FF; color: var(--ta-navy);">PIC Sales</span>
                 </div>
                 <div class="crm-chart-box tall">
-                    <canvas id="chartPicWorkload"></canvas>
+                    <?php if ($hasPicData): ?>
+                        <canvas id="chartPicWorkload"></canvas>
+                    <?php else: ?>
+                        <div class="crm-empty-state">
+                            <div class="crm-empty-icon theme-navy"><i class="bi bi-people-fill"></i></div>
+                            <div class="crm-empty-title">Belum Ada Data Performa PIC Sales</div>
+                            <p class="crm-empty-desc">Komposisi beban kerja PIC akan muncul setelah ada prospek yang ditugaskan kepada staf.</p>
+                            <a href="/leads/index.php?open=tambah_lead" class="btn-toolbar-orange mt-3" style="font-size: 12.5px; padding: 0.38rem 0.9rem;">
+                                <i class="bi bi-plus-lg"></i> Tambah Lead Baru
+                            </a>
+                        </div>
+                    <?php endif; ?>
                 </div>
             </div>
         </div>
 
         <div class="col-lg-6">
             <div class="analytics-card crm-analytics-card">
-                <div class="d-flex align-items-start justify-content-between gap-2">
+                <div class="d-flex align-items-start justify-content-between flex-wrap gap-2">
                     <div>
-                        <h2 class="crm-card-title">Analisis Penyebab Proyek Gagal (Loss Reasons)</h2>
-                        <div class="crm-card-sub">Rekap faktor utama kegagalan penawaran / tender dari kolom <code>alasan_loss</code></div>
+                        <h2 class="crm-card-title">Efektivitas Sumber Lead (Win vs Loss per Channel)</h2>
+                        <div class="crm-card-sub">Perbandingan proyek Win, leads aktif, dan proyek Loss dari tiap sumber informasi</div>
                     </div>
-                    <span class="badge-pill-red"><?= $isLossSimulated ? 'Simulasi' : 'Evaluasi' ?></span>
+                    <span class="badge-pill-soft" style="background: #ECFDF5; color: #047857; border: 1px solid rgba(16, 185, 129, 0.25);">
+                        <i class="bi bi-award-fill me-1"></i><?= htmlspecialchars($topChannelBadgeText) ?>
+                    </span>
                 </div>
                 <div class="crm-chart-box tall">
-                    <canvas id="chartLossReasons"></canvas>
+                    <?php if ($hasChOutcomeData): ?>
+                        <canvas id="chartChannelOutcome"></canvas>
+                    <?php else: ?>
+                        <div class="crm-empty-state">
+                            <div class="crm-empty-icon theme-orange"><i class="bi bi-bar-chart-steps"></i></div>
+                            <div class="crm-empty-title">Belum Ada Data Sumber Lead</div>
+                            <p class="crm-empty-desc">Perbandingan proyek Win, Aktif, dan Loss per channel akan tampil setelah ada prospek tercatat.</p>
+                        </div>
+                    <?php endif; ?>
                 </div>
             </div>
         </div>
     </div>
 </main>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="/assets/vendor/chart.umd.min.js"></script>
 <script>
 (function () {
+    if (typeof Chart === 'undefined') return;
     Chart.defaults.font.family = "'Inter', -apple-system, BlinkMacSystemFont, sans-serif";
     Chart.defaults.font.size = 13;
     Chart.defaults.color = '#475569';
@@ -491,7 +655,7 @@ $lossValues = array_values($lossReasons);
                 datasets: [{
                     label: 'Jumlah Prospek',
                     data: funnelData,
-                    backgroundColor: ['#062A4E', '#0D559B', '#2B78C5', '#F38218', '#135E38'],
+                    backgroundColor: ['#062A4E', '#0D559B', '#F38218', '#135E38'],
                     borderRadius: 9,
                     barThickness: 26,
                 }]
@@ -607,6 +771,9 @@ $lossValues = array_values($lossReasons);
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                layout: {
+                    padding: { left: 12, right: 16, top: 8 }
+                },
                 interaction: { mode: 'index', intersect: false },
                 plugins: {
                     legend: {
@@ -645,19 +812,25 @@ $lossValues = array_values($lossReasons);
                         label: 'Leads Aktif',
                         data: <?= json_encode($picAktif) ?>,
                         backgroundColor: '#0D559B',
-                        borderRadius: 6,
+                        borderRadius: 8,
+                        maxBarThickness: 54,
+                        categoryPercentage: 0.55,
                     },
                     {
                         label: 'Win',
                         data: <?= json_encode($picWin) ?>,
                         backgroundColor: '#135E38',
-                        borderRadius: 6,
+                        borderRadius: 8,
+                        maxBarThickness: 54,
+                        categoryPercentage: 0.55,
                     },
                     {
                         label: 'Loss',
                         data: <?= json_encode($picLoss) ?>,
                         backgroundColor: '#EF4444',
-                        borderRadius: 6,
+                        borderRadius: 8,
+                        maxBarThickness: 54,
+                        categoryPercentage: 0.55,
                     }
                 ]
             },
@@ -681,7 +854,7 @@ $lossValues = array_values($lossReasons);
                     y: {
                         stacked: true,
                         beginAtZero: true,
-                        ticks: { stepSize: 2, precision: 0 },
+                        ticks: { stepSize: 1, precision: 0 },
                         grid: { color: 'rgba(13, 85, 155, 0.08)' },
                         border: { display: false }
                     }
@@ -690,19 +863,82 @@ $lossValues = array_values($lossReasons);
         });
     }
 
-    // e. Analisis Penyebab Proyek Gagal / Loss Reasons (Horizontal Bar Chart)
-    const ctxLoss = document.getElementById('chartLossReasons');
-    if (ctxLoss) {
-        new Chart(ctxLoss, {
+    // e. Efektivitas Sumber Lead (Win vs Aktif vs Loss per Channel - Stacked Bar Chart)
+    const ctxChOutcome = document.getElementById('chartChannelOutcome');
+    if (ctxChOutcome) {
+        new Chart(ctxChOutcome, {
             type: 'bar',
             data: {
-                labels: <?= json_encode($lossLabels, JSON_UNESCAPED_UNICODE) ?>,
+                labels: <?= json_encode($chOutLabels, JSON_UNESCAPED_UNICODE) ?>,
+                datasets: [
+                    {
+                        label: 'Proyek Win',
+                        data: <?= json_encode($chOutWin) ?>,
+                        backgroundColor: '#10B981',
+                        borderRadius: 8,
+                        maxBarThickness: 54,
+                        categoryPercentage: 0.55,
+                    },
+                    {
+                        label: 'Leads Aktif',
+                        data: <?= json_encode($chOutAktif) ?>,
+                        backgroundColor: '#0D559B',
+                        borderRadius: 8,
+                        maxBarThickness: 54,
+                        categoryPercentage: 0.55,
+                    },
+                    {
+                        label: 'Proyek Loss',
+                        data: <?= json_encode($chOutLoss) ?>,
+                        backgroundColor: '#F43F5E',
+                        borderRadius: 8,
+                        maxBarThickness: 54,
+                        categoryPercentage: 0.55,
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: { usePointStyle: true, pointStyle: 'circle', padding: 14, color: '#062A4E', font: { weight: '500' } }
+                    },
+                    tooltip: commonTooltip
+                },
+                scales: {
+                    x: {
+                        stacked: true,
+                        ticks: { color: '#062A4E', font: { weight: '600' } },
+                        grid: { display: false },
+                        border: { display: false }
+                    },
+                    y: {
+                        stacked: true,
+                        beginAtZero: true,
+                        ticks: { stepSize: 1, precision: 0 },
+                        grid: { color: 'rgba(13, 85, 155, 0.08)' },
+                        border: { display: false }
+                    }
+                }
+            }
+        });
+    }
+
+    // f. Statistik Indikator Kemenangan (Win)
+    const ctxWinInd = document.getElementById('chartWinIndicators');
+    if (ctxWinInd) {
+        new Chart(ctxWinInd, {
+            type: 'bar',
+            data: {
+                labels: <?= json_encode($winIndLabels, JSON_UNESCAPED_UNICODE) ?>,
                 datasets: [{
-                    label: 'Jumlah Proyek Loss',
-                    data: <?= json_encode($lossValues) ?>,
-                    backgroundColor: ['#DC2626', '#F38218', '#B45309', '#64748B', '#062A4E', '#0D559B'],
+                    label: 'Jumlah Deal Win',
+                    data: <?= json_encode($winIndValues) ?>,
+                    backgroundColor: ['#10B981', '#059669', '#0D559B', '#14B8A6', '#06B6D4', '#84CC16'],
                     borderRadius: 8,
-                    barThickness: 24,
+                    maxBarThickness: 28,
                 }]
             },
             options: {
@@ -715,7 +951,7 @@ $lossValues = array_values($lossReasons);
                         ...commonTooltip,
                         callbacks: {
                             label: function (ctx) {
-                                return ` ${ctx.parsed.x} proyek gagal karena ${ctx.label}`;
+                                return ` ${ctx.parsed.x} deal menang (${ctx.label})`;
                             }
                         }
                     }
@@ -724,7 +960,54 @@ $lossValues = array_values($lossReasons);
                     x: {
                         beginAtZero: true,
                         ticks: { stepSize: 1, precision: 0 },
-                        grid: { color: 'rgba(13, 85, 155, 0.08)' },
+                        grid: { color: 'rgba(16, 185, 129, 0.1)' },
+                        border: { display: false }
+                    },
+                    y: {
+                        ticks: { color: '#062A4E', font: { weight: '600' } },
+                        grid: { display: false },
+                        border: { display: false }
+                    }
+                }
+            }
+        });
+    }
+
+    // g. Statistik Indikator Kekalahan (Loss)
+    const ctxLossInd = document.getElementById('chartLossIndicators');
+    if (ctxLossInd) {
+        new Chart(ctxLossInd, {
+            type: 'bar',
+            data: {
+                labels: <?= json_encode($lossIndLabels, JSON_UNESCAPED_UNICODE) ?>,
+                datasets: [{
+                    label: 'Jumlah Proyek Loss',
+                    data: <?= json_encode($lossIndValues) ?>,
+                    backgroundColor: ['#F43F5E', '#DC2626', '#F38218', '#B45309', '#9F1239', '#64748B'],
+                    borderRadius: 8,
+                    maxBarThickness: 28,
+                }]
+            },
+            options: {
+                indexAxis: 'y',
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        ...commonTooltip,
+                        callbacks: {
+                            label: function (ctx) {
+                                return ` ${ctx.parsed.x} proyek gagal (${ctx.label})`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        beginAtZero: true,
+                        ticks: { stepSize: 1, precision: 0 },
+                        grid: { color: 'rgba(244, 63, 94, 0.1)' },
                         border: { display: false }
                     },
                     y: {

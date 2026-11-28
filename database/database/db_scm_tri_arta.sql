@@ -35,6 +35,12 @@ CREATE TABLE vendor (
     alamat TEXT
 );
 
+CREATE TABLE kategori_material (
+    id_kategori SERIAL PRIMARY KEY,
+    nama_kategori VARCHAR(100) NOT NULL UNIQUE,
+    warna_dot VARCHAR(20) NOT NULL DEFAULT '#0D559B'
+);
+
 CREATE TABLE material (
     id_material VARCHAR(10) PRIMARY KEY,
     nama_material VARCHAR(100) NOT NULL,
@@ -44,7 +50,8 @@ CREATE TABLE material (
     total_stok INT NOT NULL DEFAULT 0 CHECK (total_stok >= 0),
     batas_minimum INT NOT NULL DEFAULT 10 CHECK (batas_minimum >= 0),
     satuan VARCHAR(20) NOT NULL,
-    gambar VARCHAR(255)
+    gambar VARCHAR(255),
+    foto_data TEXT DEFAULT NULL
 );
 
 CREATE TABLE kemasan_qr (
@@ -103,8 +110,20 @@ CREATE TABLE detail_keluar (
 CREATE TABLE leads (
     id_lead SERIAL PRIMARY KEY,
     nama_klien VARCHAR(100) NOT NULL,
+    nama_proyek_prospek VARCHAR(200),
+    lokasi_proyek TEXT,
+    latitude DECIMAL(10, 7),
+    longitude DECIMAL(10, 7),
     sumber_informasi VARCHAR(50) CHECK (sumber_informasi IN ('WhatsApp', 'Kabar Burung', 'Relasi', 'Lainnya')),
-    tahapan_pipeline VARCHAR(50) NOT NULL DEFAULT 'New Lead' CHECK (tahapan_pipeline IN ('New Lead', 'Opportunity', 'Site Visit', 'Quotation', 'Win', 'Loss')),
+    sumber_lainnya VARCHAR(100),
+    tahapan_pipeline VARCHAR(50) NOT NULL DEFAULT 'New Lead' CHECK (tahapan_pipeline IN ('New Lead', 'Opportunity', 'Quotation', 'Win', 'Loss')),
+    is_site_visit BOOLEAN DEFAULT FALSE,
+    tgl_site_visit DATE DEFAULT NULL,
+    nilai_proyek NUMERIC(15, 2) DEFAULT NULL,
+    keuntungan_bersih NUMERIC(15, 2) DEFAULT NULL,
+    margin_persen NUMERIC(5, 2) DEFAULT NULL,
+    indikator_hasil VARCHAR(120),
+    alasan_hasil TEXT,
     alasan_loss TEXT,
     tanggal_masuk TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     id_staf_pic VARCHAR(10) REFERENCES staf(id_staf) ON UPDATE CASCADE ON DELETE SET NULL
@@ -152,15 +171,21 @@ INSERT INTO vendor VALUES
 ('VND-004', 'CV Mitra Pipa Nusantara', '081377665544', 'Jl. Sholeh Iskandar No. 45, Kota Bogor'),
 ('VND-005', 'PT Sintetis & Rubber Sport Indonesia', '02188990011', 'Kawasan Industri Jababeka, Cikarang');
 
+INSERT INTO kategori_material (nama_kategori, warna_dot) VALUES
+('Elektrikal', '#F26522'),
+('Irigasi', '#0D559B'),
+('Kontrol & Otomasi', '#8B5CF6'),
+('Perpipaan', '#06B6D4');
+
 INSERT INTO material (id_material, nama_material, kategori, merek, spesifikasi_teknis, total_stok, batas_minimum, satuan) VALUES
-('MAT-001', 'Sprinkler Rotor', 'Irigasi', 'Rain Bird', 'Rain Bird 5004 Rotor Sprinkler', 26, 15, 'Unit'),
-('MAT-002', 'Pipa PVC AW 2 Inch', 'Perpipaan', 'Wavin', 'Pipa PVC Wavin AW 2 inch panjang 4m', 50, 30, 'Batang'),
-('MAT-003', 'Irrigation Controller', 'Kontrol & Otomasi', 'Rain Bird', 'ESP-TM2 8-Station Irrigation Controller', 4, 5, 'Unit'),
-('MAT-004', 'Solenoid Electric Valve', 'Irigasi', 'Rain Bird', 'Rain Bird 100-HV Solenoid Electric Valve', 6, 10, 'Unit'),
-('MAT-005', 'Fitting Elbow & Socket 2 Inch', 'Perpipaan', 'Rucika', 'Elbow & Socket PVC 2 inch', 60, 40, 'Pcs'),
-('MAT-006', 'Kabel Listrik NYYHY 2x1.5mm', 'Elektrikal', 'Supreme', 'Kabel Listrik NYYHY 2x1.5mm (100m/roll)', 150, 200, 'Meter'),
-('MAT-007', 'Waterproof Junction Box', 'Elektrikal', 'Schneider', 'Waterproof Junction Box & Konektor IP65', 13, 10, 'Set'),
-('MAT-008', 'Selang Tubing LDPE 16mm', 'Irigasi', 'Netafim', 'Selang Tubing LDPE 16mm Drip Line (100m/roll)', 6, 8, 'Roll');
+('MAT-001', 'Sprinkler Rotor Rain Bird', 'Irigasi', 'Rain Bird', 'Rain Bird 5004 Rotor Sprinkler', 26, 15, 'Unit'),
+('MAT-002', 'Pipa PVC AW Wavin 2 Inch', 'Perpipaan', 'Wavin', 'Pipa PVC Wavin AW 2 inch panjang 4m', 50, 30, 'Batang'),
+('MAT-003', 'Irrigation Controller Rain Bird', 'Kontrol & Otomasi', 'Rain Bird', 'ESP-TM2 8-Station Irrigation Controller', 4, 5, 'Unit'),
+('MAT-004', 'Solenoid Electric Valve Rain Bird', 'Irigasi', 'Rain Bird', 'Rain Bird 100-HV Solenoid Electric Valve', 6, 10, 'Unit'),
+('MAT-005', 'Fitting Elbow & Socket Rucika 2 Inch', 'Perpipaan', 'Rucika', 'Elbow & Socket PVC 2 inch', 60, 40, 'Pcs'),
+('MAT-006', 'Kabel Listrik NYYHY Supreme 2x1.5mm', 'Elektrikal', 'Supreme', 'Kabel Listrik NYYHY 2x1.5mm (100m/roll)', 150, 200, 'Meter'),
+('MAT-007', 'Waterproof Junction Box Schneider', 'Elektrikal', 'Schneider', 'Waterproof Junction Box & Konektor IP65', 13, 10, 'Set'),
+('MAT-008', 'Selang Tubing LDPE Toro 16mm', 'Irigasi', 'Netafim', 'Selang Tubing LDPE 16mm Drip Line (100m/roll)', 6, 8, 'Roll');
 
 INSERT INTO kemasan_qr VALUES
 ('QR-SEC-A1-001', 'MAT-001', 'Section A1 - Rak Irigasi', 'BATCH-2026-01', 50, 26, '2026-04-01', 'Sebagian Terpakai'),
@@ -204,6 +229,11 @@ INSERT INTO detail_keluar VALUES
 ('DOUT-2026-006', 'OUT-2026-003', 'QR-SEC-D1-001', 150, '2026-04-15 10:05:00', 'Scan keluar 150 meter kabel Supreme dari Section D1'),
 ('DOUT-2026-007', 'OUT-2026-003', 'QR-SEC-D2-001', 12, '2026-04-15 10:10:00', 'Scan keluar 12 set junction box dari Section D2'),
 ('DOUT-2026-008', 'OUT-2026-004', 'QR-SEC-A2-001', 4, '2026-04-18 11:00:00', 'Scan keluar 4 roll selang LDPE dari Section A2');
+
+INSERT INTO leads (nama_klien, nama_proyek_prospek, lokasi_proyek, latitude, longitude, sumber_informasi, tahapan_pipeline, indikator_hasil, alasan_hasil, alasan_loss, id_staf_pic) VALUES
+('Klub Golf Bogor Raya', 'Revitalisasi Irigasi Fairway Bogor Raya', 'Jl. Golf Estate Bogor Raya, Sukaraja, Kab. Bogor, Jawa Barat', -6.5892000, 106.8271000, 'WhatsApp', 'Loss', 'Harga Kalah Bersaing', 'Penawaran harga kompetitor lebih rendah dari RAB yang diajukan.', 'Penawaran harga kompetitor lebih rendah dari RAB yang diajukan.', 'STF-003'),
+('Sentul Highland', 'Instalasi Sistem Irigasi Sentul Highlands Golf', 'Sentul Highlands Golf Club, Babakan Madang, Kab. Bogor, Jawa Barat', -6.5831000, 106.8674000, 'Relasi', 'Win', 'Relasi / Klien Percaya', 'Klien mempercayai rekam jejak dan kualitas pengerjaan PT Tri Arta Konstruksi.', NULL, 'STF-001'),
+('Rancamaya Gold', 'Upgrade Sprinkler & Kontrol Irigasi Rancamaya', 'Jl. Rancamaya Utama, Bogor Selatan, Kota Bogor, Jawa Barat', -6.6548000, 106.8235000, 'Kabar Burung', 'Loss', 'Keduluan Kompetitor', 'Kompetitor lebih dulu menandatangani kesepakatan pengerjaan dengan klien.', 'Kompetitor lebih dulu menandatangani kesepakatan pengerjaan dengan klien.', 'STF-002');
 
 -- ============================================================================
 -- QUERY MONITORING & ANALITIK REFERENSI
@@ -277,16 +307,144 @@ WHERE password_hash IS NULL OR password_hash = '';
 CREATE TABLE IF NOT EXISTS leads (
     id_lead SERIAL PRIMARY KEY,
     nama_klien VARCHAR(100) NOT NULL,
+    nama_proyek_prospek VARCHAR(200),
+    lokasi_proyek TEXT,
+    latitude DECIMAL(10, 7),
+    longitude DECIMAL(10, 7),
     sumber_informasi VARCHAR(50) CHECK (sumber_informasi IN ('WhatsApp', 'Kabar Burung', 'Relasi', 'Lainnya')),
-    tahapan_pipeline VARCHAR(50) NOT NULL DEFAULT 'New Lead' CHECK (tahapan_pipeline IN ('New Lead', 'Opportunity', 'Site Visit', 'Quotation', 'Win', 'Loss')),
+    sumber_lainnya VARCHAR(100),
+    tahapan_pipeline VARCHAR(50) NOT NULL DEFAULT 'New Lead' CHECK (tahapan_pipeline IN ('New Lead', 'Opportunity', 'Quotation', 'Win', 'Loss')),
+    is_site_visit BOOLEAN DEFAULT FALSE,
+    tgl_site_visit DATE DEFAULT NULL,
+    nilai_proyek NUMERIC(15, 2) DEFAULT NULL,
+    keuntungan_bersih NUMERIC(15, 2) DEFAULT NULL,
+    margin_persen NUMERIC(5, 2) DEFAULT NULL,
+    indikator_hasil VARCHAR(120),
+    alasan_hasil TEXT,
     alasan_loss TEXT,
     tanggal_masuk TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     id_staf_pic VARCHAR(10) REFERENCES staf(id_staf) ON UPDATE CASCADE ON DELETE SET NULL
 );
 
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS nama_proyek_prospek VARCHAR(200);
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS sumber_lainnya VARCHAR(100);
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS lokasi_proyek TEXT;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS latitude DECIMAL(10, 7);
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS longitude DECIMAL(10, 7);
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS nilai_proyek NUMERIC(15, 2);
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS keuntungan_bersih NUMERIC(15, 2);
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS margin_persen NUMERIC(5, 2);
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS is_site_visit BOOLEAN DEFAULT FALSE;
+ALTER TABLE leads ALTER COLUMN is_site_visit SET DEFAULT FALSE;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS tgl_site_visit DATE DEFAULT NULL;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS indikator_hasil VARCHAR(120);
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS alasan_hasil TEXT;
+
+UPDATE leads
+SET is_site_visit = FALSE
+WHERE is_site_visit IS NULL;
+
+UPDATE leads
+SET tahapan_pipeline = 'Opportunity',
+    is_site_visit    = TRUE
+WHERE tahapan_pipeline = 'Site Visit';
+
+DO $$
+DECLARE
+    c_name TEXT;
+BEGIN
+    FOR c_name IN
+        SELECT conname
+        FROM pg_constraint
+        WHERE conrelid = 'leads'::regclass
+          AND contype = 'c'
+          AND pg_get_constraintdef(oid) ILIKE '%tahapan_pipeline%'
+          AND pg_get_constraintdef(oid) ILIKE '%Site Visit%'
+    LOOP
+        EXECUTE format('ALTER TABLE leads DROP CONSTRAINT IF EXISTS %I', c_name);
+    END LOOP;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'leads'::regclass
+          AND contype = 'c'
+          AND conname = 'leads_tahapan_pipeline_check'
+    ) THEN
+        ALTER TABLE leads
+            ADD CONSTRAINT leads_tahapan_pipeline_check
+            CHECK (tahapan_pipeline IN ('New Lead', 'Opportunity', 'Quotation', 'Win', 'Loss'));
+    END IF;
+END $$;
+
+UPDATE leads
+SET alasan_hasil = alasan_loss
+WHERE alasan_hasil IS NULL
+  AND alasan_loss IS NOT NULL
+  AND TRIM(alasan_loss) <> '';
+
+UPDATE leads
+SET indikator_hasil = 'Relasi / Klien Percaya',
+    alasan_hasil    = COALESCE(NULLIF(TRIM(alasan_hasil), ''), 'Klien mempercayai rekam jejak dan kualitas pengerjaan PT Tri Arta Konstruksi.')
+WHERE tahapan_pipeline = 'Win'
+  AND (indikator_hasil IS NULL OR TRIM(indikator_hasil) = '');
+
+WITH ranked_loss AS (
+    SELECT id_lead, ROW_NUMBER() OVER (ORDER BY id_lead ASC) AS rn
+    FROM leads
+    WHERE tahapan_pipeline = 'Loss'
+      AND (indikator_hasil IS NULL OR TRIM(indikator_hasil) = '')
+)
+UPDATE leads l
+SET indikator_hasil = CASE WHEN rl.rn = 1 THEN 'Harga Kalah Bersaing' ELSE 'Keduluan Kompetitor' END,
+    alasan_hasil    = COALESCE(
+        NULLIF(TRIM(l.alasan_hasil), ''),
+        NULLIF(TRIM(l.alasan_loss), ''),
+        CASE
+            WHEN rl.rn = 1 THEN 'Penawaran harga kompetitor lebih rendah dari RAB yang diajukan.'
+            ELSE 'Kompetitor lebih dulu menandatangani kesepakatan pengerjaan dengan klien.'
+        END
+    )
+FROM ranked_loss rl
+WHERE l.id_lead = rl.id_lead;
+
+ALTER TABLE proyek ADD COLUMN IF NOT EXISTS id_lead_sumber INT;
+
 CREATE INDEX IF NOT EXISTS idx_leads_pipeline_tgl ON leads(tahapan_pipeline, tanggal_masuk DESC);
 
 -- ============================================================================
--- 6. MIGRASI AMAN KOLOM GAMBAR MATERIAL (UNTUK DATABASE EKSISTING)
+-- 6. MIGRASI AMAN KOLOM GAMBAR & CADANGAN BASE64 MATERIAL (UNTUK DATABASE EKSISTING)
 -- ============================================================================
 ALTER TABLE material ADD COLUMN IF NOT EXISTS gambar VARCHAR(255);
+ALTER TABLE material ADD COLUMN IF NOT EXISTS foto_data TEXT;
+
+-- ============================================================================
+-- 7. MIGRASI AMAN TABEL KATEGORI MATERIAL & PENYERAGAMAN NAMA 8 MATERIAL AWAL
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS kategori_material (
+    id_kategori SERIAL PRIMARY KEY,
+    nama_kategori VARCHAR(100) NOT NULL UNIQUE,
+    warna_dot VARCHAR(20) NOT NULL DEFAULT '#0D559B'
+);
+
+INSERT INTO kategori_material (nama_kategori, warna_dot) VALUES
+('Elektrikal', '#F26522'),
+('Irigasi', '#0D559B'),
+('Kontrol & Otomasi', '#8B5CF6'),
+('Perpipaan', '#06B6D4')
+ON CONFLICT (nama_kategori) DO UPDATE SET warna_dot = EXCLUDED.warna_dot;
+
+INSERT INTO kategori_material (nama_kategori, warna_dot)
+SELECT DISTINCT kategori, '#617275'
+FROM material
+WHERE kategori IS NOT NULL AND TRIM(kategori) <> ''
+ON CONFLICT (nama_kategori) DO NOTHING;
+
+UPDATE material SET nama_material = 'Sprinkler Rotor Rain Bird'            WHERE id_material = 'MAT-001';
+UPDATE material SET nama_material = 'Pipa PVC AW Wavin 2 Inch'             WHERE id_material = 'MAT-002';
+UPDATE material SET nama_material = 'Irrigation Controller Rain Bird'      WHERE id_material = 'MAT-003';
+UPDATE material SET nama_material = 'Solenoid Electric Valve Rain Bird'    WHERE id_material = 'MAT-004';
+UPDATE material SET nama_material = 'Fitting Elbow & Socket Rucika 2 Inch' WHERE id_material = 'MAT-005';
+UPDATE material SET nama_material = 'Kabel Listrik NYYHY Supreme 2x1.5mm'  WHERE id_material = 'MAT-006';
+UPDATE material SET nama_material = 'Waterproof Junction Box Schneider'    WHERE id_material = 'MAT-007';
+UPDATE material SET nama_material = 'Selang Tubing LDPE Toro 16mm'         WHERE id_material = 'MAT-008';

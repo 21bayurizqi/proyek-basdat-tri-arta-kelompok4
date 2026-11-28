@@ -1,27 +1,57 @@
 <?php
 require_once __DIR__ . '/../config/auth.php';
-$authUser     = getAuthUser();
-$currentUri   = $_SERVER['REQUEST_URI'] ?? '';
-$currentPath  = parse_url($currentUri, PHP_URL_PATH) ?: '/';
-$isDashboard  = ($currentPath === '/' || $currentPath === '/index.php');
+require_once __DIR__ . '/../config/app_helpers.php';
+$authUser         = getAuthUser();
+$isApproverUser   = isApproverAdmin();
+$currentUri       = $_SERVER['REQUEST_URI'] ?? '';
+$currentPath      = parse_url($currentUri, PHP_URL_PATH) ?: '/';
+$isDashboard      = ($currentPath === '/' || $currentPath === '/index.php');
 $isLeads          = str_starts_with($currentPath, '/leads/');
 $isLeadsAnalytics = ($currentPath === '/leads/analytics.php');
 $isLeadsIndex     = ($currentPath === '/leads/index.php' || $currentPath === '/leads/');
 $isLeadsCreate    = ($currentPath === '/leads/create.php');
+$isLeadsWin       = ($currentPath === '/leads/win.php');
+$isLeadsLoss      = ($currentPath === '/leads/loss.php');
 $isBarang         = str_starts_with($currentPath, '/barang/');
 $isTransaksi      = str_starts_with($currentPath, '/transaksi_qr/');
+$activeKategori   = ($isBarang && isset($_GET['kategori'])) ? trim((string)$_GET['kategori']) : '';
 
 $countPending = isset($pdo) ? (int)$pdo->query("SELECT COUNT(*) FROM barang_keluar WHERE status_approval = 'Pending Approval'")->fetchColumn() : 0;
 $countMat     = isset($pdo) ? (int)$pdo->query("SELECT COUNT(*) FROM material")->fetchColumn() : 0;
-$sidebarKats  = isset($pdo) ? $pdo->query("SELECT kategori, COUNT(*) AS jml FROM material GROUP BY kategori ORDER BY kategori ASC")->fetchAll() : [];
+$sidebarKats  = isset($pdo) ? getKategoriMaterialWithCounts($pdo) : [];
 $countLeadsAktif = 0;
+$countLeadsWin   = 0;
+$countLeadsLoss  = 0;
 if (isset($pdo)) {
     try {
-        $countLeadsAktif = (int)$pdo->query("SELECT COUNT(*) FROM leads WHERE tahapan_pipeline NOT IN ('Win', 'Loss')")->fetchColumn();
+        $leadStatRow = $pdo->query("
+            SELECT
+                SUM(CASE WHEN tahapan_pipeline IN ('New Lead', 'Opportunity', 'Quotation') THEN 1 ELSE 0 END) AS jml_aktif,
+                SUM(CASE WHEN tahapan_pipeline = 'Win' THEN 1 ELSE 0 END) AS jml_win,
+                SUM(CASE WHEN tahapan_pipeline = 'Loss' THEN 1 ELSE 0 END) AS jml_loss
+            FROM leads
+        ")->fetch();
+        if ($leadStatRow) {
+            $countLeadsAktif = (int)($leadStatRow['jml_aktif'] ?? 0);
+            $countLeadsWin   = (int)($leadStatRow['jml_win'] ?? 0);
+            $countLeadsLoss  = (int)($leadStatRow['jml_loss'] ?? 0);
+        }
     } catch (PDOException $e) {
         $countLeadsAktif = 0;
+        $countLeadsWin   = 0;
+        $countLeadsLoss  = 0;
     }
 }
+
+$pageTitle = match (true) {
+    $isTransaksi      => 'Scan & Barang Keluar — PT Tri Arta Konstruksi',
+    $isLeadsAnalytics => 'Analitik & Rangkuman CRM — PT Tri Arta Konstruksi',
+    $isLeadsWin       => 'Proyek Win — PT Tri Arta Konstruksi',
+    $isLeadsLoss      => 'Proyek Loss — PT Tri Arta Konstruksi',
+    $isLeads          => 'Pipeline Leads CRM — PT Tri Arta Konstruksi',
+    $isBarang         => 'All Material — PT Tri Arta Konstruksi',
+    default           => 'Executive Summary — PT Tri Arta Konstruksi',
+};
 
 $authInitials = 'TA';
 if ($authUser && !empty($authUser['nama'])) {
@@ -41,12 +71,9 @@ if (file_exists(__DIR__ . '/../assets/logo-tri-arta.png')) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SCM & QR Inventory — PT Tri Arta Konstruksi</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+    <title><?= htmlspecialchars($pageTitle) ?></title>
+    <link href="/assets/vendor/bootstrap.min.css" rel="stylesheet">
+    <link href="/assets/vendor/bootstrap-icons.min.css" rel="stylesheet">
     <script>
         (function () {
             try {
@@ -469,11 +496,53 @@ if (file_exists(__DIR__ . '/../assets/logo-tri-arta.png')) {
         }
         .menu-row:hover { background: rgba(255, 255, 255, 0.55); color: var(--ta-navy); }
         .menu-row.active {
-            background: linear-gradient(145deg, rgba(244, 249, 255, 0.94) 0%, rgba(253, 245, 237, 0.94) 100%);
-            color: var(--ta-navy);
+            background: linear-gradient(135deg, rgba(13, 85, 155, 0.14) 0%, rgba(244, 249, 255, 0.94) 100%);
+            color: var(--ta-blue);
             font-weight: 600;
-            border: 1px solid rgba(13, 85, 155, 0.18);
-            box-shadow: 0 2px 6px rgba(6, 42, 78, 0.06);
+            border: 1px solid rgba(13, 85, 155, 0.28);
+            box-shadow: 0 2px 8px rgba(13, 85, 155, 0.08);
+        }
+        .nav-sub-acc-group {
+            margin-top: 2px;
+            padding-left: 8px;
+        }
+        .nav-sub-acc-btn {
+            width: 100%;
+            background: transparent;
+            border: none;
+            border-radius: 8px;
+            padding: 0.45rem 0.65rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            font-size: 13.5px;
+            font-weight: 600;
+            color: #334155;
+            cursor: pointer;
+            transition: background 0.14s ease, color 0.14s ease;
+        }
+        .nav-sub-acc-btn:hover {
+            background: rgba(13, 85, 155, 0.07);
+            color: var(--ta-navy);
+        }
+        .nav-sub-caret {
+            font-size: 10.5px;
+            color: #64748B;
+            flex-shrink: 0;
+            transition: transform 0.22s ease, color 0.15s ease;
+            transform: rotate(0deg);
+        }
+        .nav-sub-acc-btn[aria-expanded="true"] .nav-sub-caret {
+            transform: rotate(90deg);
+            color: var(--ta-blue);
+        }
+        .nav-sub-list {
+            margin-left: 14px;
+            padding-left: 10px;
+            border-left: 1.5px solid rgba(13, 85, 155, 0.14);
+            margin-top: 3px;
+            margin-bottom: 4px;
         }
         .badge-pill-soft {
             font-size: 12.5px;
@@ -491,19 +560,75 @@ if (file_exists(__DIR__ . '/../assets/logo-tri-arta.png')) {
             background: #FEE2E2;
             color: #DC2626;
         }
+        .cat-dot-row {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            margin-bottom: 2px;
+        }
         .cat-dot-link {
+            flex: 1;
+            min-width: 0;
             display: flex;
             align-items: flex-start;
-            gap: 10px;
-            padding: 0.44rem 0.72rem 0.44rem 1.05rem;
-            font-size: 14px;
+            gap: 9px;
+            padding: 0.4rem 0.55rem;
+            font-size: 13.5px;
             font-weight: 500;
             color: #334155;
             text-decoration: none;
             border-radius: 8px;
-            margin-bottom: 2px;
+            transition: all 0.12s ease;
         }
         .cat-dot-link:hover { background: rgba(255, 255, 255, 0.55); color: var(--ta-navy); }
+        .cat-dot-link.active {
+            background: linear-gradient(135deg, rgba(13, 85, 155, 0.13) 0%, rgba(244, 249, 255, 0.92) 100%);
+            color: var(--ta-blue);
+            font-weight: 600;
+            border: 1px solid rgba(13, 85, 155, 0.24);
+        }
+        .cat-del-btn {
+            border: none;
+            background: transparent;
+            color: #94A3B8;
+            width: 24px;
+            height: 24px;
+            border-radius: 6px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.78rem;
+            padding: 0;
+            flex-shrink: 0;
+            cursor: pointer;
+            transition: all 0.14s ease;
+        }
+        .cat-del-btn:hover {
+            background: #FEE2E2;
+            color: #DC2626;
+        }
+        .cat-add-trigger {
+            width: 100%;
+            margin-top: 6px;
+            padding: 0.38rem 0.6rem;
+            border-radius: 8px;
+            border: 1px dashed rgba(13, 85, 155, 0.35);
+            background: rgba(240, 246, 253, 0.65);
+            color: var(--ta-blue);
+            font-size: 12.5px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            cursor: pointer;
+            transition: all 0.14s ease;
+        }
+        .cat-add-trigger:hover {
+            background: rgba(13, 85, 155, 0.12);
+            border-color: var(--ta-blue);
+            color: var(--ta-navy);
+        }
         .dot-bullet {
             width: 7px;
             height: 7px;
@@ -623,6 +748,130 @@ if (file_exists(__DIR__ . '/../assets/logo-tri-arta.png')) {
             border: 1px solid rgba(13, 85, 155, 0.16) !important;
             box-shadow: 0 6px 20px rgba(6, 42, 78, 0.06) !important;
         }
+
+        /* Backdrop Kaca Buram & Standar Pop-Up Modal Besar Estetik (Near-Full Content Width) */
+        .modal-backdrop.show {
+            background-color: rgba(6, 42, 78, 0.42) !important;
+            opacity: 1 !important;
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+        }
+        .ta-large-modal .modal-dialog {
+            max-width: min(92vw, 1140px);
+            width: 100%;
+            margin: 1.5rem auto;
+        }
+        .ta-large-modal .modal-content {
+            max-height: 90vh;
+            border-radius: 24px !important;
+            border: 1px solid rgba(13, 85, 155, 0.18) !important;
+            box-shadow: 0 28px 70px rgba(6, 42, 78, 0.24) !important;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            position: relative;
+        }
+        .ta-lm-accent {
+            height: 4px;
+            width: 100%;
+            flex-shrink: 0;
+        }
+        .ta-lm-accent.theme-orange {
+            background: linear-gradient(90deg, #F38218 0%, #FB923C 55%, #0D559B 100%);
+        }
+        .ta-lm-accent.theme-navy {
+            background: linear-gradient(90deg, #062A4E 0%, #0D559B 55%, #F38218 100%);
+        }
+        .ta-lm-form {
+            display: flex;
+            flex-direction: column;
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow: hidden;
+        }
+        .ta-lm-header {
+            padding: 1.15rem 1.75rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-shrink: 0;
+            border-bottom: 1px solid rgba(13, 85, 155, 0.14);
+            background: linear-gradient(90deg, rgba(235, 244, 253, 0.92) 0%, rgba(254, 244, 233, 0.92) 100%);
+        }
+        .ta-lm-header-badge {
+            width: 44px;
+            height: 44px;
+            border-radius: 13px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+            flex-shrink: 0;
+        }
+        .ta-lm-header-badge.theme-orange {
+            background: linear-gradient(135deg, rgba(243, 130, 24, 0.18), rgba(255, 247, 237, 0.95));
+            color: var(--ta-orange);
+            border: 1px solid rgba(243, 130, 24, 0.3);
+        }
+        .ta-lm-header-badge.theme-navy {
+            background: linear-gradient(135deg, rgba(6, 42, 78, 0.14), rgba(239, 246, 255, 0.95));
+            color: var(--ta-navy);
+            border: 1px solid rgba(13, 85, 155, 0.25);
+        }
+        .ta-lm-close {
+            width: 36px;
+            height: 36px;
+            border-radius: 10px;
+            border: 1px solid rgba(13, 85, 155, 0.16);
+            background: rgba(255, 255, 255, 0.85);
+            color: var(--ta-navy);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1rem;
+            cursor: pointer;
+            flex-shrink: 0;
+            transition: all 0.15s ease;
+        }
+        .ta-lm-close:hover {
+            background: var(--ta-navy);
+            border-color: var(--ta-navy);
+            color: #FFFFFF;
+            transform: rotate(90deg);
+        }
+        .ta-lm-body {
+            padding: 1.5rem 1.75rem;
+            overflow-y: auto;
+            flex: 1 1 auto;
+            min-height: 0;
+        }
+        .ta-lm-footer {
+            padding: 1rem 1.75rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-shrink: 0;
+            border-top: 1px solid rgba(13, 85, 155, 0.14);
+            background: linear-gradient(90deg, rgba(238, 245, 253, 0.95) 0%, rgba(253, 246, 238, 0.95) 100%);
+        }
+        .ta-lm-panel {
+            background: linear-gradient(145deg, rgba(255, 255, 255, 0.72) 0%, rgba(238, 246, 254, 0.65) 100%);
+            border: 1px solid rgba(13, 85, 155, 0.15);
+            border-radius: 16px;
+            padding: 1.15rem 1.25rem;
+        }
+        @media (max-width: 767.98px) {
+            .ta-large-modal .modal-dialog {
+                max-width: 96vw;
+                margin: 0.75rem auto;
+            }
+            .ta-lm-header, .ta-lm-body, .ta-lm-footer {
+                padding-left: 1.15rem;
+                padding-right: 1.15rem;
+            }
+        }
         .form-control,
         .form-select {
             background: linear-gradient(145deg, rgba(240, 246, 253, 0.92) 0%, rgba(253, 245, 237, 0.92) 100%) !important;
@@ -732,6 +981,36 @@ if (file_exists(__DIR__ . '/../assets/logo-tri-arta.png')) {
         .row-act-icon:hover { background: #F3F4F6; color: var(--ta-navy); }
         .row-act-icon.del:hover { background: #FEF2F2; color: #DC2626; }
 
+        /* Global Alert Banner & Presisi Tombol Close (×) */
+        .alert:not(.d-none),
+        .alert-dismissible:not(.d-none) {
+            display: flex !important;
+            align-items: center !important;
+            justify-content: space-between !important;
+            gap: 16px;
+            padding: 14px 20px !important;
+            border-radius: 14px !important;
+            line-height: 1.45;
+        }
+        .alert-dismissible .btn-close {
+            position: static !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            width: 28px;
+            height: 28px;
+            flex-shrink: 0;
+            border-radius: 8px;
+            opacity: 0.65;
+            transition: opacity 0.2s ease, background-color 0.2s ease;
+        }
+        .alert-dismissible .btn-close:hover {
+            opacity: 1;
+            background-color: rgba(6, 42, 78, 0.08);
+        }
+        .alert-dismissible .btn-close:focus {
+            box-shadow: 0 0 0 3px rgba(13, 85, 155, 0.16);
+        }
+
         /* Pagination Footer Persis Gambar */
         .dribbble-pagination {
             display: flex;
@@ -811,7 +1090,7 @@ if (file_exists(__DIR__ . '/../assets/logo-tri-arta.png')) {
         <a href="/barang/index.php" class="rail-icon <?= $isBarang ? 'active' : '' ?>" title="Modul SCM / Warehouse">
             <i class="bi bi-box-seam"></i>
         </a>
-        <a href="/transaksi_qr/index.php" class="rail-icon <?= $isTransaksi ? 'active' : '' ?>" title="Transaksi Barang Keluar QR">
+        <a href="/transaksi_qr/index.php" class="rail-icon <?= $isTransaksi ? 'active' : '' ?>" title="Scan &amp; Barang Keluar">
             <i class="bi bi-qr-code-scan"></i>
             <?php if ($countPending > 0): ?>
                 <span class="rail-pill-badge"><?= $countPending ?></span>
@@ -832,7 +1111,7 @@ if (file_exists(__DIR__ . '/../assets/logo-tri-arta.png')) {
                 <li>
                     <a class="dropdown-item" href="/transaksi_qr/create.php">
                         <i class="bi bi-qr-code-scan" style="color: var(--ta-blue);"></i>
-                        <span>Tambah Transaksi QR</span>
+                        <span>Scan &amp; Barang Keluar</span>
                     </a>
                 </li>
             </ul>
@@ -864,15 +1143,22 @@ if (file_exists(__DIR__ . '/../assets/logo-tri-arta.png')) {
                 <?php endif; ?>
             </div>
 
-            <!-- Tombol Tunggal Executive Summary -->
-            <a href="/index.php" class="menu-row mt-1 mb-1 <?= $isDashboard ? 'active' : '' ?>">
+            <!-- Menu Berdiri Sendiri (Standalone) -->
+            <a href="/index.php" class="menu-row mt-1 <?= $isDashboard ? 'active' : '' ?>">
                 <i class="bi bi-grid-1x2"></i>
                 <span class="nav-label-text">Executive Summary</span>
             </a>
+            <a href="/transaksi_qr/index.php" class="menu-row mb-1 <?= $isTransaksi ? 'active' : '' ?>">
+                <i class="bi bi-qr-code-scan"></i>
+                <span class="nav-label-text">Scan &amp; Barang Keluar</span>
+                <?php if ($countPending > 0): ?>
+                    <span class="badge-pill-red"><?= $countPending ?></span>
+                <?php endif; ?>
+            </a>
 
-            <!-- Accordion Grup 1: CRM & SALES -->
+            <!-- Bab 1: CRM & SALES (Level 1 Accordion) -->
             <div class="nav-acc-group">
-                <button type="button" class="nav-acc-btn" data-bs-toggle="collapse" data-bs-target="#accCrmSales" data-acc-key="crm" aria-expanded="true" aria-controls="accCrmSales">
+                <button type="button" class="nav-acc-btn" data-acc-toggle="1" data-acc-target="#accCrmSales" data-acc-key="crm" aria-expanded="true" aria-controls="accCrmSales">
                     <span>CRM &amp; Sales</span>
                     <i class="bi bi-caret-up-fill nav-acc-caret"></i>
                 </button>
@@ -881,70 +1167,77 @@ if (file_exists(__DIR__ . '/../assets/logo-tri-arta.png')) {
                         <i class="bi bi-bar-chart-line" style="color: var(--ta-blue);"></i>
                         <span class="nav-label-text">Analitik &amp; Rangkuman CRM</span>
                     </a>
-                    <a href="/leads/index.php" class="menu-row <?= $isLeadsIndex ? 'active' : '' ?>">
+                    <a href="/leads/index.php" class="menu-row <?= ($isLeadsIndex || $isLeadsCreate) ? 'active' : '' ?>">
                         <i class="bi bi-speedometer2" style="color: var(--ta-orange);"></i>
                         <span class="nav-label-text">Pipeline Leads</span>
                         <span class="badge-pill-soft" style="background: #FFF7ED; color: var(--ta-orange);"><?= $countLeadsAktif ?></span>
                     </a>
-                    <a href="/leads/create.php" class="menu-row <?= $isLeadsCreate ? 'active' : '' ?>">
-                        <i class="bi bi-person-plus"></i>
-                        <span class="nav-label-text">Tambah Lead Baru</span>
+                    <a href="/leads/win.php" class="menu-row <?= $isLeadsWin ? 'active' : '' ?>">
+                        <i class="bi bi-trophy-fill" style="color: #059669;"></i>
+                        <span class="nav-label-text">Proyek Win</span>
+                        <span class="badge-pill-soft" style="background: #ECFDF5; color: #059669;"><?= $countLeadsWin ?></span>
+                    </a>
+                    <a href="/leads/loss.php" class="menu-row <?= $isLeadsLoss ? 'active' : '' ?>">
+                        <i class="bi bi-x-octagon-fill" style="color: #DC2626;"></i>
+                        <span class="nav-label-text">Proyek Loss</span>
+                        <span class="badge-pill-red"><?= $countLeadsLoss ?></span>
                     </a>
                 </div>
             </div>
 
-            <!-- Accordion Grup 2: INVENTORY & SCM -->
+            <!-- Bab 2: INVENTORY & SCM (Level 1 Accordion + Nested Sub-Bab Material Category) -->
             <div class="nav-acc-group">
-                <button type="button" class="nav-acc-btn" data-bs-toggle="collapse" data-bs-target="#accInventoryScm" data-acc-key="scm" aria-expanded="true" aria-controls="accInventoryScm">
+                <button type="button" class="nav-acc-btn" data-acc-toggle="1" data-acc-target="#accInventoryScm" data-acc-key="scm" aria-expanded="true" aria-controls="accInventoryScm">
                     <span>Inventory &amp; SCM</span>
                     <i class="bi bi-caret-up-fill nav-acc-caret"></i>
                 </button>
-                <div id="accInventoryScm" class="collapse show nav-acc-list" data-acc-key="scm">
-                    <a href="/barang/index.php" class="menu-row <?= $isBarang ? 'active' : '' ?>">
+                <div id="accInventoryScm" class="collapse show nav-acc-list" data-acc-key="scm" data-force-open="<?= $activeKategori !== '' ? '1' : '0' ?>">
+                    <a href="/barang/index.php" class="menu-row <?= ($isBarang && $activeKategori === '') ? 'active' : '' ?>">
                         <i class="bi bi-box-seam"></i>
                         <span class="nav-label-text">All Material</span>
                         <span class="badge-pill-soft"><?= $countMat ?></span>
                     </a>
-                    <a href="/transaksi_qr/index.php" class="menu-row <?= $isTransaksi ? 'active' : '' ?>">
-                        <i class="bi bi-qr-code-scan"></i>
-                        <span class="nav-label-text">Transaksi QR</span>
-                        <?php if ($countPending > 0): ?>
-                            <span class="badge-pill-red"><?= $countPending ?></span>
-                        <?php endif; ?>
-                    </a>
-                </div>
-            </div>
 
-            <!-- Accordion Grup 3: MATERIAL CATEGORY -->
-            <div class="nav-acc-group">
-                <button type="button" class="nav-acc-btn" data-bs-toggle="collapse" data-bs-target="#accMaterialCat" data-acc-key="cat" aria-expanded="true" aria-controls="accMaterialCat">
-                    <span>Material Category</span>
-                    <i class="bi bi-caret-up-fill nav-acc-caret"></i>
-                </button>
-                <div id="accMaterialCat" class="collapse show nav-acc-list" data-acc-key="cat">
-                    <?php
-                    $dotColors = ['#F38218', '#0D559B', '#135E38', '#062A4E', '#617275'];
-                    $katMap = [
-                        'Elektrikal'        => 0,
-                        'Irigasi'           => 0,
-                        'Kontrol & Otomasi' => 0,
-                        'Perpipaan'         => 0,
-                    ];
-                    foreach ($sidebarKats as $sk) {
-                        $katMap[$sk['kategori']] = (int)$sk['jml'];
-                    }
-                    ksort($katMap);
-                    $idx = 0;
-                    foreach ($katMap as $katName => $katJml):
-                        $dot = $dotColors[$idx % count($dotColors)];
-                        $idx++;
-                    ?>
-                        <a href="/barang/index.php?kategori=<?= urlencode($katName) ?>" class="cat-dot-link">
-                            <span class="dot-bullet" style="background: <?= $dot ?>;"></span>
-                            <span class="nav-label-text"><?= htmlspecialchars($katName) ?></span>
-                            <span class="badge-pill-soft"><?= $katJml ?></span>
-                        </a>
-                    <?php endforeach; ?>
+                    <!-- Sub-Bab: Material Category (Level 2 Nested Accordion Dinamis) -->
+                    <div class="nav-sub-acc-group">
+                        <button type="button" class="nav-sub-acc-btn" data-acc-toggle="1" data-acc-target="#accMaterialCat" data-acc-key="cat" aria-expanded="true" aria-controls="accMaterialCat">
+                            <span class="d-flex align-items-center gap-2 min-w-0">
+                                <i class="bi bi-tags" style="color: var(--ta-blue); flex-shrink: 0;"></i>
+                                <span class="nav-label-text text-start">Material Category</span>
+                            </span>
+                            <i class="bi bi-caret-right-fill nav-sub-caret"></i>
+                        </button>
+                        <div id="accMaterialCat" class="collapse show nav-sub-list" data-acc-key="cat" data-force-open="<?= $activeKategori !== '' ? '1' : '0' ?>">
+                            <?php foreach ($sidebarKats as $sk):
+                                $katId       = (int)$sk['id_kategori'];
+                                $katName     = (string)$sk['nama_kategori'];
+                                $katJml      = (int)$sk['jml_material'];
+                                $dot         = !empty($sk['warna_dot']) ? $sk['warna_dot'] : '#0D559B';
+                                $isActiveKat = ($activeKategori !== '' && $activeKategori === $katName);
+                            ?>
+                                <div class="cat-dot-row">
+                                    <a href="/barang/index.php?kategori=<?= urlencode($katName) ?>" class="cat-dot-link <?= $isActiveKat ? 'active' : '' ?>">
+                                        <span class="dot-bullet" style="background: <?= htmlspecialchars($dot) ?>;"></span>
+                                        <span class="nav-label-text"><?= htmlspecialchars($katName) ?></span>
+                                        <span class="badge-pill-soft"><?= $katJml ?></span>
+                                    </a>
+                                    <form method="POST" action="/barang/kategori_action.php" class="d-inline m-0"
+                                          onsubmit="return confirm('Hapus kategori <?= htmlspecialchars($katName, ENT_QUOTES) ?>?');">
+                                        <input type="hidden" name="aksi" value="hapus">
+                                        <input type="hidden" name="id_kategori" value="<?= $katId ?>">
+                                        <input type="hidden" name="return_to" value="<?= htmlspecialchars($currentPath) ?>">
+                                        <button type="submit" class="cat-del-btn" title="Hapus Kategori <?= htmlspecialchars($katName) ?>">
+                                            <i class="bi bi-trash3"></i>
+                                        </button>
+                                    </form>
+                                </div>
+                            <?php endforeach; ?>
+
+                            <button type="button" class="cat-add-trigger" data-bs-toggle="modal" data-bs-target="#addCategoryModal">
+                                <i class="bi bi-plus-lg"></i> Tambah Kategori
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -964,6 +1257,100 @@ if (file_exists(__DIR__ . '/../assets/logo-tri-arta.png')) {
             </div>
         </div>
     </aside>
+    <script>
+    // Eksekusi instan tepat setelah sidebar agar tombol toggle & accordion responsif 0ms tanpa menunggu CDN
+    (function () {
+        const STORAGE_KEY = 'ta_nav_sidebar_open_v2';
+        const ACC_KEY     = 'ta_nav_accordion_state_v3';
+        const root        = document.documentElement;
+        const toggleBtn   = document.getElementById('sidebarToggleBtn');
+
+        requestAnimationFrame(function () {
+            root.classList.remove('nav-sidebar-no-anim');
+        });
+
+        function syncAria() {
+            if (toggleBtn) {
+                toggleBtn.setAttribute('aria-expanded', root.classList.contains('nav-sidebar-open') ? 'true' : 'false');
+            }
+        }
+
+        function setSidebarOpen(isOpen, persistDesktop) {
+            root.classList.toggle('nav-sidebar-open', isOpen);
+            syncAria();
+            if (persistDesktop && window.innerWidth >= 992) {
+                try {
+                    localStorage.setItem(STORAGE_KEY, isOpen ? 'true' : 'false');
+                } catch (e) {}
+            }
+            setTimeout(function () {
+                window.dispatchEvent(new Event('resize'));
+            }, 270);
+        }
+
+        // Pulihkan state nested accordion dari localStorage secara langsung
+        let accState = {};
+        try {
+            accState = JSON.parse(localStorage.getItem(ACC_KEY) || '{}') || {};
+        } catch (e) {
+            accState = {};
+        }
+
+        function applyAccordionState(panel, btn, isOpen) {
+            panel.classList.toggle('show', isOpen);
+            btn.classList.toggle('collapsed', !isOpen);
+            btn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+        }
+
+        document.querySelectorAll('.nav-acc-list[data-acc-key], .nav-sub-list[data-acc-key]').forEach(function (panel) {
+            const key       = panel.getAttribute('data-acc-key');
+            const forceOpen = panel.getAttribute('data-force-open') === '1';
+            const btn       = document.querySelector('[data-acc-toggle="1"][data-acc-key="' + key + '"]');
+            if (!key || !btn) return;
+            const shouldOpen = forceOpen || accState[key] !== false;
+            applyAccordionState(panel, btn, shouldOpen);
+        });
+
+        // Event delegation global agar klik tombol sidebar & accordion langsung aktif seketika
+        document.addEventListener('click', function (e) {
+            const sbToggle = e.target.closest('#sidebarToggleBtn');
+            if (sbToggle) {
+                e.preventDefault();
+                setSidebarOpen(!root.classList.contains('nav-sidebar-open'), true);
+                return;
+            }
+
+            if (e.target.closest('#navSidebarBackdrop')) {
+                setSidebarOpen(false, false);
+                return;
+            }
+
+            const accBtn = e.target.closest('[data-acc-toggle="1"]');
+            if (accBtn) {
+                e.preventDefault();
+                e.stopPropagation();
+                const targetSel = accBtn.getAttribute('data-acc-target');
+                const key       = accBtn.getAttribute('data-acc-key');
+                const panel     = targetSel ? document.querySelector(targetSel) : null;
+                if (!panel) return;
+                const nextOpen = !panel.classList.contains('show');
+                applyAccordionState(panel, accBtn, nextOpen);
+                if (key) {
+                    accState[key] = nextOpen;
+                    try { localStorage.setItem(ACC_KEY, JSON.stringify(accState)); } catch (err) {}
+                }
+            }
+        });
+
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape' && root.classList.contains('nav-sidebar-open') && window.innerWidth < 992) {
+                setSidebarOpen(false, false);
+            }
+        });
+
+        syncAria();
+    })();
+    </script>
 
     <!-- 3. Main Content -->
     <div class="content-area">

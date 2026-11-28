@@ -14,6 +14,37 @@ function isLoggedIn(): bool
     return !empty($_SESSION['id_staf']) && !empty($_SESSION['username']);
 }
 
+function isApproverStaffId(?string $idStaf): bool
+{
+    return in_array(strtoupper(trim((string)$idStaf)), ['STF-001', 'STF-002'], true);
+}
+
+/**
+ * RBAC: Hak akses khusus Ismail Sahid (STF-001 / ismail.sahid)
+ * dan Taufan Kusuma Negara (STF-002 / taufan.kusuma).
+ */
+function isApproverAdmin(): bool
+{
+    if (!isLoggedIn()) {
+        return false;
+    }
+    $idStaf   = strtoupper(trim((string)($_SESSION['id_staf'] ?? '')));
+    $username = strtolower(trim((string)($_SESSION['username'] ?? '')));
+
+    return in_array($idStaf, ['STF-001', 'STF-002'], true)
+        || in_array($username, ['ismail.sahid', 'taufan.kusuma'], true);
+}
+
+function requireApproverAdmin(string $redirectTo = '/barang/index.php'): void
+{
+    requireAuth();
+    if (!isApproverAdmin()) {
+        $sep = str_contains($redirectTo, '?') ? '&' : '?';
+        header('Location: ' . $redirectTo . $sep . 'err=' . urlencode('Akses ditolak. Fitur ini hanya tersedia untuk akun Ismail Sahid atau Taufan Kusuma Negara.'));
+        exit;
+    }
+}
+
 function getAuthUser(): ?array
 {
     if (!isLoggedIn()) {

@@ -2,8 +2,21 @@
 require_once __DIR__ . '/../config/auth.php';
 requireAuth();
 require_once __DIR__ . '/../config/db.php';
+require_once __DIR__ . '/../config/qr_helper.php';
+require_once __DIR__ . '/../config/app_helpers.php';
 
-$proyekList = $pdo->query("SELECT id_proyek, no_kontrak, nama_proyek, status_proyek FROM proyek ORDER BY id_proyek ASC")->fetchAll();
+// Sinkronisasi otomatis material berstok > 0 & migrasi nomor kontrak lama SPK/TAK/WIN-*
+syncMissingKemasanQr($pdo);
+migrateLegacyWinContracts($pdo);
+
+$proyekList = $pdo->query("
+    SELECT id_proyek, no_kontrak, nama_proyek, status_proyek
+    FROM proyek
+    ORDER BY
+        COALESCE(CAST(SUBSTRING(no_kontrak FROM '([0-9]{3})$') AS INTEGER), 0) DESC,
+        no_kontrak DESC,
+        id_proyek DESC
+")->fetchAll();
 $stafList   = $pdo->query("
     SELECT s.id_staf, s.nama, j.nama_jabatan
     FROM staf s
@@ -39,7 +52,7 @@ $error = '';
 $form = [
     'id_keluar'        => $suggestedIdKeluar,
     'id_proyek'        => '',
-    'id_staf_pemohon'  => '',
+    'id_staf_pemohon'  => $_SESSION['id_staf'] ?? '',
     'tujuan_keperluan' => '',
     'kode_qr'          => trim($_GET['kode_qr'] ?? ''),
     'qty_keluar'       => '1',
@@ -94,17 +107,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->rollBack();
                 $error = 'Jumlah diambil melebihi total stok material di gudang (' . (int)$qrRow['total_stok'] . ' ' . $qrRow['satuan'] . ').';
             } else {
-                // 2. Insert header barang_keluar (id_staf_validator NULL agar sesuai chk_approval_validator)
-                $stmtBk = $pdo->prepare("
-                    INSERT INTO barang_keluar (id_keluar, id_proyek, id_staf_pemohon, tgl_keluar, tujuan_keperluan, status_approval)
-                    VALUES (:id, :proyek, :pemohon, CURRENT_DATE, :keperluan, 'Pending Approval')
-                ");
-                $stmtBk->execute([
-                    ':id'        => $id_keluar,
-                    ':proyek'    => $id_proyek,
-                    ':pemohon'   => $id_pemohon,
-                    ':keperluan' => $keperluan,
-                ]);
+                // Auto-Approve jika Staf Pemohon adalah Ismail Sahid (STF-001) atau Taufan Kusuma Negara (STF-002)
+                $isAutoApprove = isApproverStaffId($id_pemohon);
+
+                // 2. Insert header barang_keluar sesuai constraint chk_approval_validator
+                if ($isAutoApprove) {
+                    $stmtBk = $pdo->prepare("
+                        INSERT INTO barang_keluar (id_keluar, id_proyek, id_staf_pemohon, id_staf_validator, tgl_keluar, tujuan_keperluan, status_approval)
+                        VALUES (:id, :proyek, :pemohon, :validator, CURRENT_DATE, :keperluan, 'Approved')
+                    ");
+                    $stmtBk->execute([
+                        ':id'        => $id_keluar,
+                        ':proyek'    => $id_proyek,
+                        ':pemohon'   => $id_pemohon,
+                        ':validator' => $id_pemohon,
+                        ':keperluan' => $keperluan,
+                    ]);
+                } else {
+                    $stmtBk = $pdo->prepare("
+                        INSERT INTO barang_keluar (id_keluar, id_proyek, id_staf_pemohon, tgl_keluar, tujuan_keperluan, status_approval)
+                        VALUES (:id, :proyek, :pemohon, CURRENT_DATE, :keperluan, 'Pending Approval')
+                    ");
+                    $stmtBk->execute([
+                        ':id'        => $id_keluar,
+                        ':proyek'    => $id_proyek,
+                        ':pemohon'   => $id_pemohon,
+                        ':keperluan' => $keperluan,
+                    ]);
+                }
 
                 // 3. Insert detail_keluar (scan QR, panjang maksimal VARCHAR(15))
                 $id_detail = 'DTL-' . strtoupper(substr(bin2hex(random_bytes(5)), 0, 10));
@@ -120,34 +150,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':ket' => $keterangan !== '' ? $keterangan : null,
                 ]);
 
-                // 4. Kurangi qty_sisa di kemasan_qr & total_stok di material
-                $sisaBaru      = (int)$qrRow['qty_sisa'] - $qty_keluar;
-                $statusKemasan = $sisaBaru <= 0 ? 'Habis' : 'Sebagian Terpakai';
+                // 4. Potong stok SEKARANG hanya jika auto-approve; jika Pending Approval, stok dipotong saat di-Approve
+                if ($isAutoApprove) {
+                    $sisaBaru      = (int)$qrRow['qty_sisa'] - $qty_keluar;
+                    $statusKemasan = $sisaBaru <= 0 ? 'Habis' : 'Sebagian Terpakai';
 
-                $updQr = $pdo->prepare("
-                    UPDATE kemasan_qr
-                    SET qty_sisa = :sisa,
-                        status_kemasan = :status
-                    WHERE kode_qr = :qr
-                ");
-                $updQr->execute([
-                    ':sisa'   => $sisaBaru,
-                    ':status' => $statusKemasan,
-                    ':qr'     => $kode_qr,
-                ]);
+                    $updQr = $pdo->prepare("
+                        UPDATE kemasan_qr
+                        SET qty_sisa = :sisa,
+                            status_kemasan = :status
+                        WHERE kode_qr = :qr
+                    ");
+                    $updQr->execute([
+                        ':sisa'   => $sisaBaru,
+                        ':status' => $statusKemasan,
+                        ':qr'     => $kode_qr,
+                    ]);
 
-                $updMat = $pdo->prepare("
-                    UPDATE material
-                    SET total_stok = total_stok - :qty
-                    WHERE id_material = :id_mat
-                ");
-                $updMat->execute([
-                    ':qty'    => $qty_keluar,
-                    ':id_mat' => $qrRow['id_material'],
-                ]);
+                    $updMat = $pdo->prepare("
+                        UPDATE material
+                        SET total_stok = total_stok - :qty
+                        WHERE id_material = :id_mat
+                    ");
+                    $updMat->execute([
+                        ':qty'    => $qty_keluar,
+                        ':id_mat' => $qrRow['id_material'],
+                    ]);
+                }
 
                 $pdo->commit();
-                header('Location: /transaksi_qr/index.php?msg=' . urlencode("Transaksi $id_keluar berhasil dicatat & stok QR diperbarui!"));
+                $successMsg = $isAutoApprove
+                    ? "Transaksi $id_keluar otomatis disetujui (Approved) & stok gudang telah diperbarui!"
+                    : "Pengajuan $id_keluar berhasil dicatat (Pending Approval). Stok gudang akan dipotong setelah disetujui.";
+                header('Location: /transaksi_qr/index.php?msg=' . urlencode($successMsg));
                 exit;
             }
         } catch (PDOException $e) {
@@ -164,11 +199,11 @@ include __DIR__ . '/../layout/header.php';
 
 <header class="saas-topbar">
     <div>
-        <h1 class="saas-title">Input Barang Keluar (Scan QR)</h1>
+        <h1 class="saas-title">Scan &amp; Barang Keluar — Input Transaksi</h1>
         <div class="text-muted" style="font-size: 14px;">Pencatatan pengeluaran material proyek berbasis scan kemasan QR gudang</div>
     </div>
     <a href="/transaksi_qr/index.php" class="btn-toolbar-white">
-        <i class="bi bi-arrow-left"></i> Kembali ke Transaksi QR
+        <i class="bi bi-arrow-left"></i> Kembali ke Scan &amp; Barang Keluar
     </a>
 </header>
 
@@ -182,12 +217,12 @@ include __DIR__ . '/../layout/header.php';
                             <i class="bi bi-qr-code-scan"></i>
                         </div>
                         <div>
-                            <div class="col-main-val" style="color: var(--ta-navy);">Form Pengajuan Barang Keluar QR</div>
-                            <div class="col-micro-lbl mb-0">Stok kemasan QR &amp; master material akan otomatis terpotong secara transaksional</div>
+                            <div class="col-main-val" style="color: var(--ta-navy);">Form Scan &amp; Barang Keluar QR</div>
+                            <div class="col-micro-lbl mb-0">Pemohon Ismail Sahid / Taufan Kusuma otomatis Approved &amp; potong stok; staf lain masuk antrean Pending Approval</div>
                         </div>
                     </div>
                     <span class="badge-pill-soft" style="background: rgba(255, 248, 240, 0.92); color: var(--ta-orange); border: 1px solid rgba(243, 130, 24, 0.35);">
-                        Pending Approval
+                        Auto / Approval Flow
                     </span>
                 </div>
 
