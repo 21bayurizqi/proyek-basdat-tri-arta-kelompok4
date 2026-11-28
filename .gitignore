@@ -1,5 +1,4 @@
 .DS_Store
 .env
-config/db.php
 assets/uploads/material/*
 !assets/uploads/material/.gitkeep
